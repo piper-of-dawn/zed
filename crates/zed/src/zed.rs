@@ -4663,6 +4663,7 @@ mod tests {
                 "go_to_line",
                 "icon_theme_selector",
                 "journal",
+                "jump",
                 "keymap_editor",
                 "keystroke_input",
                 "language_selector",
