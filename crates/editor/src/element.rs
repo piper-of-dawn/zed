@@ -6,7 +6,7 @@ use crate::{
     EditDisplayMode, EditPrediction, Editor, EditorMode, EditorSettings, EditorSnapshot,
     EditorStyle, FILE_HEADER_HEIGHT, FocusedBlock, GutterDimensions, HalfPageDown, HalfPageUp,
     HandleInput, HoveredCursor, InlayHintRefreshReason, JumpData, LineDown, LineHighlight, LineUp,
-    MAX_LINE_LEN, MINIMAP_FONT_SIZE, MULTI_BUFFER_EXCERPT_HEADER_HEIGHT, OpenExcerpts, PageDown,
+    MAX_LINE_LEN, MINIMAP_FONT_SIZE, MULTI_BUFFER_EXCERPT_HEADER_HEIGHT, JUMP_TOGGLE_OVERLAY_OPACITY, OpenExcerpts, PageDown,
     PageUp, PhantomBreakpointIndicator, Point, RowExt, RowRangeExt, SelectPhase,
     SelectedTextHighlight, Selection, SelectionDragState, SelectionEffects, SizingBehavior,
     SoftWrap, StickyHeaderExcerpt, ToPoint, ToggleFold, ToggleFoldAll,
@@ -7266,6 +7266,11 @@ impl EditorElement {
         let scroll_pixel_position = layout.position_map.scroll_pixel_position;
 
         let theme = cx.theme().colors();
+        let text_bounds = layout.position_map.text_hitbox.bounds;
+        let mut overlay = theme.panel_overlay_hover;
+        overlay.fade_out(JUMP_TOGGLE_OVERLAY_OPACITY);
+        window.paint_quad(fill(text_bounds, overlay));
+
         let label_bg = theme.text_accent;
         let label_fg = theme.editor_background;
         let match_bg = theme.editor_document_highlight_read_background;
