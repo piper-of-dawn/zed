@@ -242,6 +242,7 @@ pub const FETCH_COLORS_DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(150);
 pub(crate) const EDIT_PREDICTION_KEY_CONTEXT: &str = "edit_prediction";
 pub(crate) const EDIT_PREDICTION_CONFLICT_KEY_CONTEXT: &str = "edit_prediction_conflict";
 pub(crate) const MINIMAP_FONT_SIZE: AbsoluteLength = AbsoluteLength::Pixels(px(2.));
+pub(crate) const JUMP_TOGGLE_OVERLAY_OPACITY: f32 = 0.4;
 
 pub type RenderDiffHunkControlsFn = Arc<
     dyn Fn(
