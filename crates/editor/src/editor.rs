@@ -54,8 +54,8 @@ mod signature_help;
 pub mod test;
 
 pub(crate) use actions::*;
-pub use display_map::{ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder};
-pub use edit_prediction::Direction;
+pub use display_map::{ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder, HighlightKey};
+pub use edit_prediction_types::Direction;
 pub use editor_settings::{
     CompletionDetailAlignment, CurrentLineHighlight, DiffViewStyle, DocumentColorsRenderMode,
     EditorSettings, HideMouseMode, ScrollBeyondLastLine, ScrollbarAxes, SearchSettings,
@@ -1859,6 +1859,13 @@ pub enum JumpData {
         anchor: text::Anchor,
         line_offset_from_top: u32,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JumpLabel {
+    pub position: DisplayPoint,
+    pub label: String,
+    pub match_length: usize,
 }
 
 pub enum MultibufferSelectionMode {

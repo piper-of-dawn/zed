@@ -7380,7 +7380,7 @@ impl EditorElement {
             });
 
             shaped_label
-                .paint(label_origin, line_height, window, cx)
+                .paint(label_origin, line_height, TextAlign::Left, None, window, cx)
                 .log_err();
         }
     }
