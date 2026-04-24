@@ -96,7 +96,10 @@ function PrepareForBundle {
 }
 
 function GenerateLicenses {
+    $oldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     . $PSScriptRoot/generate-licenses.ps1
+    $ErrorActionPreference = $oldErrorActionPreference
 }
 
 function BuildZedAndItsFriends {
@@ -121,32 +124,12 @@ function BuildZedAndItsFriends {
     Copy-Item -Path ".\$CargoOutDir\explorer_command_injector.dll" -Destination "$innoDir\zed_explorer_command_injector.dll" -Force
 }
 
-function BuildRemoteServer {
-    Write-Output "Building remote_server for $target"
-    cargo build --release --package remote_server --target $target
-
-    # Create zipped remote server binary
-    $remoteServerSrc = (Resolve-Path ".\$CargoOutDir\remote_server.exe").Path
-
-    if ($env:CI) {
-        Write-Output "Code signing remote_server.exe"
-        & "$innoDir\sign.ps1" $remoteServerSrc
-    }
-
-    $remoteServerDst = "$env:ZED_WORKSPACE\target\zed-remote-server-windows-$Architecture.zip"
-    Write-Output "Compressing remote_server to $remoteServerDst"
-    Compress-Archive -Path $remoteServerSrc -DestinationPath $remoteServerDst -Force
-
-    Write-Output "Remote server compressed successfully"
-}
-
 function ZipZedAndItsFriendsDebug {
     $items = @(
         ".\$CargoOutDir\zed.pdb",
         ".\$CargoOutDir\cli.pdb",
         ".\$CargoOutDir\auto_update_helper.pdb",
-        ".\$CargoOutDir\explorer_command_injector.pdb",
-        ".\$CargoOutDir\remote_server.pdb"
+        ".\$CargoOutDir\explorer_command_injector.pdb"
     )
 
     Compress-Archive -Path $items -DestinationPath ".\$CargoOutDir\zed-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip" -Force
@@ -164,20 +147,7 @@ function UploadToSentry {
         return
     }
     Write-Output "Uploading zed debug symbols to sentry..."
-    for ($i = 1; $i -le 3; $i++) {
-        try {
-            sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev $CargoOutDir
-            break
-        }
-        catch {
-            Write-Output "Sentry upload attempt $i failed: $_"
-            if ($i -eq 3) {
-                Write-Output "All sentry upload attempts failed"
-                throw
-            }
-            Start-Sleep -Seconds 2
-        }
-    }
+    sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev $CargoOutDir
 }
 
 function MakeAppx {
@@ -219,8 +189,8 @@ function DownloadAMDGpuServices {
 }
 
 function DownloadConpty {
-    $url = "https://github.com/microsoft/terminal/releases/download/v1.23.13503.0/Microsoft.Windows.Console.ConPTY.1.23.251216003.nupkg"
-    $zipPath = ".\Microsoft.Windows.Console.ConPTY.1.23.251216003.nupkg"
+    $url = "https://www.nuget.org/api/v2/package/CI.Microsoft.Windows.Console.ConPTY/1.22.250314001"
+    $zipPath = ".\conpty.zip"
     Invoke-WebRequest -Uri $url -OutFile $zipPath
     Expand-Archive -Path $zipPath -DestinationPath ".\conpty" -Force
 }
@@ -234,7 +204,7 @@ function CollectFiles {
     if($Architecture -eq "aarch64") {
         New-Item -Type Directory -Path "$innoDir\arm64" -Force
         Move-Item -Path ".\conpty\build\native\runtimes\arm64\OpenConsole.exe" -Destination "$innoDir\arm64\OpenConsole.exe" -Force
-        Move-Item -Path ".\conpty\runtimes\win-arm64\native\conpty.dll" -Destination "$innoDir\conpty.dll" -Force
+        Move-Item -Path ".\conpty\runtimes\win10-arm64\native\conpty.dll" -Destination "$innoDir\conpty.dll" -Force
     }
     else {
         New-Item -Type Directory -Path "$innoDir\x64" -Force
@@ -242,7 +212,7 @@ function CollectFiles {
         Move-Item -Path ".\AGS_SDK-6.3.0\ags_lib\lib\amd_ags_x64.dll" -Destination "$innoDir\amd_ags_x64.dll" -Force
         Move-Item -Path ".\conpty\build\native\runtimes\x64\OpenConsole.exe" -Destination "$innoDir\x64\OpenConsole.exe" -Force
         Move-Item -Path ".\conpty\build\native\runtimes\arm64\OpenConsole.exe" -Destination "$innoDir\arm64\OpenConsole.exe" -Force
-        Move-Item -Path ".\conpty\runtimes\win-x64\native\conpty.dll" -Destination "$innoDir\conpty.dll" -Force
+        Move-Item -Path ".\conpty\runtimes\win10-x64\native\conpty.dll" -Destination "$innoDir\conpty.dll" -Force
     }
 }
 
@@ -369,7 +339,6 @@ CheckEnvironmentVariables
 PrepareForBundle
 GenerateLicenses
 BuildZedAndItsFriends
-BuildRemoteServer
 MakeAppx
 SignZedAndItsFriends
 ZipZedAndItsFriendsDebug

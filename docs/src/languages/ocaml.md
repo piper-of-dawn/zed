@@ -1,8 +1,3 @@
----
-title: OCaml
-description: "Configure OCaml language support in Zed, including language servers, formatting, and debugging."
----
-
 # OCaml
 
 OCaml support is available through the [OCaml extension](https://github.com/zed-extensions/ocaml).
@@ -38,4 +33,4 @@ Once you have the cli, simply from a terminal, navigate to your project and run
 zed .
 ```
 
-You should now have Zed running with OCaml support, with no additional setup required.
+Voilà! You should have Zed running with OCaml support, no additional setup required.

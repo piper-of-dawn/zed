@@ -1,8 +1,3 @@
----
-title: Shell Script
-description: "Configure Shell Script language support in Zed, including language servers, formatting, and debugging."
----
-
 # Shell Scripts
 
 Shell Scripts (bash, zsh, dash, sh) are supported natively by Zed.
@@ -11,7 +6,7 @@ Shell Scripts (bash, zsh, dash, sh) are supported natively by Zed.
 
 ## Settings
 
-Configure settings in Settings ({#kb zed::OpenSettings}) under Languages > Shell Script, or add to your settings file:
+You can configure various settings for Shell Scripts in your Zed User Settings (`~/.config/zed/settings.json`) or Zed Project Settings (`.zed/settings.json`):
 
 ```json [settings]
   "languages": {
@@ -44,7 +39,7 @@ which shfmt
 shfmt --version
 ```
 
-3. Configure formatting in Settings ({#kb zed::OpenSettings}) under Languages > Shell Script, or add to your settings file:
+3. Configure Zed to automatically format Shell Scripts with `shfmt` on save:
 
 ```json [settings]
   "languages": {

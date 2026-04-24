@@ -1,11 +1,8 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
 use gpui::{
-    Background, Bounds, ColorSpace, Context, MouseDownEvent, Path, PathBuilder, PathStyle, Pixels,
-    Point, Render, StrokeOptions, Window, WindowOptions, canvas, div, linear_color_stop,
-    linear_gradient, point, prelude::*, px, quad, rgb, size,
+    Application, Background, Bounds, ColorSpace, Context, MouseDownEvent, Path, PathBuilder,
+    PathStyle, Pixels, Point, Render, SharedString, StrokeOptions, Window, WindowOptions, canvas,
+    div, linear_color_stop, linear_gradient, point, prelude::*, px, quad, rgb, size,
 };
-use gpui_platform::application;
 
 struct PaintingViewer {
     default_lines: Vec<(Path<Pixels>, Background)>,
@@ -312,7 +309,7 @@ fn button(
     on_click: impl Fn(&mut PaintingViewer, &mut Context<PaintingViewer>) + 'static,
 ) -> impl IntoElement {
     div()
-        .id(text.to_string())
+        .id(SharedString::from(text.to_string()))
         .child(text.to_string())
         .bg(gpui::black())
         .text_color(gpui::white())
@@ -447,8 +444,8 @@ impl Render for PaintingViewer {
     }
 }
 
-fn run_example() {
-    application().run(|cx| {
+fn main() {
+    Application::new().run(|cx| {
         cx.open_window(
             WindowOptions {
                 focus: true,
@@ -457,22 +454,10 @@ fn run_example() {
             |window, cx| cx.new(|cx| PaintingViewer::new(window, cx)),
         )
         .unwrap();
-        cx.on_window_closed(|cx, _window_id| {
+        cx.on_window_closed(|cx| {
             cx.quit();
         })
         .detach();
         cx.activate(true);
     });
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
-    run_example();
 }

@@ -1,16 +1,18 @@
 mod ids;
-pub mod queries;
+mod queries;
 mod tables;
+#[cfg(test)]
+pub mod tests;
 
 use crate::{Error, Result};
 use anyhow::{Context as _, anyhow};
-use cloud_api_types::{ExtensionMetadata, ExtensionProvides};
 use collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use dashmap::DashMap;
 use futures::StreamExt;
 use project_repository_statuses::StatusKind;
+use rpc::ExtensionProvides;
 use rpc::{
-    ConnectionId,
+    ConnectionId, ExtensionMetadata,
     proto::{self},
 };
 use sea_orm::{
@@ -20,7 +22,7 @@ use sea_orm::{
     entity::prelude::*,
     sea_query::{Alias, Expr, OnConflict},
 };
-use semver::Version;
+use semantic_version::SemanticVersion;
 use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
 use std::{
@@ -35,12 +37,16 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use util::paths::PathStyle;
 use worktree_settings_file::LocalSettingsKind;
 
+#[cfg(test)]
+pub use tests::TestDb;
+
 pub use ids::*;
+pub use queries::contributors::ContributorSelector;
 pub use sea_orm::ConnectOptions;
 pub use tables::user::Model as User;
 pub use tables::*;
 
-#[cfg(feature = "test-support")]
+#[cfg(test)]
 pub struct DatabaseTestOptions {
     pub executor: gpui::BackgroundExecutor,
     pub runtime: tokio::runtime::Runtime,
@@ -50,14 +56,14 @@ pub struct DatabaseTestOptions {
 /// Database gives you a handle that lets you access the database.
 /// It handles pooling internally.
 pub struct Database {
-    pub options: ConnectOptions,
-    pub pool: DatabaseConnection,
+    options: ConnectOptions,
+    pool: DatabaseConnection,
     rooms: DashMap<RoomId, Arc<Mutex<()>>>,
     projects: DashMap<ProjectId, Arc<Mutex<()>>>,
     notification_kinds_by_id: HashMap<NotificationKindId, &'static str>,
     notification_kinds_by_name: HashMap<String, NotificationKindId>,
-    #[cfg(feature = "test-support")]
-    pub test_options: Option<DatabaseTestOptions>,
+    #[cfg(test)]
+    test_options: Option<DatabaseTestOptions>,
 }
 
 // The `Database` type has so many methods that its impl blocks are split into
@@ -73,7 +79,7 @@ impl Database {
             projects: DashMap::with_capacity(16384),
             notification_kinds_by_id: HashMap::default(),
             notification_kinds_by_name: HashMap::default(),
-            #[cfg(feature = "test-support")]
+            #[cfg(test)]
             test_options: None,
         })
     }
@@ -82,7 +88,7 @@ impl Database {
         &self.options
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(test)]
     pub fn reset(&self) {
         self.rooms.clear();
         self.projects.clear();
@@ -243,8 +249,10 @@ impl Database {
     where
         F: Future<Output = Result<T>>,
     {
-        #[cfg(feature = "test-support")]
+        #[cfg(test)]
         {
+            use rand::prelude::*;
+
             let test_options = self.test_options.as_ref().unwrap();
             test_options.executor.simulate_random_delay().await;
             let fail_probability = *test_options.query_failure_probability.lock();
@@ -255,7 +263,7 @@ impl Database {
             test_options.runtime.block_on(future)
         }
 
-        #[cfg(not(feature = "test-support"))]
+        #[cfg(not(test))]
         {
             future.await
         }
@@ -377,6 +385,9 @@ pub struct NewUserParams {
 #[derive(Debug)]
 pub struct NewUserResult {
     pub user_id: UserId,
+    pub metrics_id: String,
+    pub inviting_user_id: Option<UserId>,
+    pub signup_device_id: Option<String>,
 }
 
 /// The result of updating a channel membership.
@@ -532,7 +543,6 @@ impl RejoinedProject {
                     root_name: worktree.root_name.clone(),
                     visible: worktree.visible,
                     abs_path: worktree.abs_path.clone(),
-                    root_repo_common_dir: None,
                 })
                 .collect(),
             collaborators: self
@@ -560,7 +570,6 @@ pub struct RejoinedWorktree {
     pub settings_files: Vec<WorktreeSettingsFile>,
     pub scan_id: u64,
     pub completed_scan_id: u64,
-    pub root_repo_common_dir: Option<String>,
 }
 
 pub struct LeftRoom {
@@ -591,7 +600,6 @@ pub struct Project {
     pub repositories: Vec<proto::UpdateRepository>,
     pub language_servers: Vec<LanguageServer>,
     pub path_style: PathStyle,
-    pub features: Vec<String>,
 }
 
 pub struct ProjectCollaborator {
@@ -640,7 +648,6 @@ pub struct Worktree {
     pub settings_files: Vec<WorktreeSettingsFile>,
     pub scan_id: u64,
     pub completed_scan_id: u64,
-    pub root_repo_common_dir: Option<String>,
 }
 
 #[derive(Debug)]
@@ -648,7 +655,6 @@ pub struct WorktreeSettingsFile {
     pub path: String,
     pub content: String,
     pub kind: LocalSettingsKind,
-    pub outside_worktree: bool,
 }
 
 pub struct NewExtensionVersion {
@@ -665,7 +671,7 @@ pub struct NewExtensionVersion {
 
 pub struct ExtensionVersionConstraints {
     pub schema_versions: RangeInclusive<i32>,
-    pub wasm_api_versions: RangeInclusive<semver::Version>,
+    pub wasm_api_versions: RangeInclusive<SemanticVersion>,
 }
 
 impl LocalSettingsKind {
@@ -736,8 +742,6 @@ fn db_status_to_proto(
         status: Some(proto::GitFileStatus {
             variant: Some(variant),
         }),
-        diff_stat_added: entry.lines_added.map(|v| v as u32),
-        diff_stat_deleted: entry.lines_deleted.map(|v| v as u32),
     })
 }
 

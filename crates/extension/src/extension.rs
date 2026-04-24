@@ -11,9 +11,10 @@ use std::sync::Arc;
 use ::lsp::LanguageServerName;
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
+use fs::normalize_path;
 use gpui::{App, Task};
 use language::LanguageName;
-use semver::Version;
+use semantic_version::SemanticVersion;
 use task::{SpawnInTerminal, ZedDebugConfig};
 use util::rel_path::RelPath;
 
@@ -56,7 +57,7 @@ pub trait Extension: Send + Sync + 'static {
 
     /// Returns a path relative to this extension's working directory.
     fn path_from_extension(&self, path: &Path) -> PathBuf {
-        util::normalize_path(&self.work_dir().join(path))
+        normalize_path(&self.work_dir().join(path))
     }
 
     async fn language_server_command(
@@ -74,18 +75,6 @@ pub trait Extension: Send + Sync + 'static {
     ) -> Result<Option<String>>;
 
     async fn language_server_workspace_configuration(
-        &self,
-        language_server_id: LanguageServerName,
-        worktree: Arc<dyn WorktreeDelegate>,
-    ) -> Result<Option<String>>;
-
-    async fn language_server_initialization_options_schema(
-        &self,
-        language_server_id: LanguageServerName,
-        worktree: Arc<dyn WorktreeDelegate>,
-    ) -> Result<Option<String>>;
-
-    async fn language_server_workspace_configuration_schema(
         &self,
         language_server_id: LanguageServerName,
         worktree: Arc<dyn WorktreeDelegate>,
@@ -181,7 +170,10 @@ pub trait Extension: Send + Sync + 'static {
     ) -> Result<DebugRequest>;
 }
 
-pub fn parse_wasm_extension_version(extension_id: &str, wasm_bytes: &[u8]) -> Result<Version> {
+pub fn parse_wasm_extension_version(
+    extension_id: &str,
+    wasm_bytes: &[u8],
+) -> Result<SemanticVersion> {
     let mut version = None;
 
     for part in wasmparser::Parser::new(0).parse_all(wasm_bytes) {
@@ -208,9 +200,9 @@ pub fn parse_wasm_extension_version(extension_id: &str, wasm_bytes: &[u8]) -> Re
     version.with_context(|| format!("extension {extension_id} has no zed:api-version section"))
 }
 
-fn parse_wasm_extension_version_custom_section(data: &[u8]) -> Option<Version> {
+fn parse_wasm_extension_version_custom_section(data: &[u8]) -> Option<SemanticVersion> {
     if data.len() == 6 {
-        Some(Version::new(
+        Some(SemanticVersion::new(
             u16::from_be_bytes([data[0], data[1]]) as _,
             u16::from_be_bytes([data[2], data[3]]) as _,
             u16::from_be_bytes([data[4], data[5]]) as _,

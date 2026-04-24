@@ -1,5 +1,4 @@
 use anyhow::Context as _;
-
 use git::repository::{Remote, RemoteCommandOutput};
 use linkify::{LinkFinder, LinkKind};
 use ui::SharedString;
@@ -139,19 +138,14 @@ pub fn format_output(action: &RemoteAction, output: RemoteCommandOutput) -> Succ
                     .find(|(indicator, _)| output.stderr.contains(indicator))
                     .and_then(|(_, mapped)| {
                         let finder = LinkFinder::new();
-
-                        output
-                            .stderr
-                            .lines()
-                            .filter(|line| line.trim_start().starts_with("remote:"))
-                            .find_map(|line| {
-                                finder
-                                    .links(line)
-                                    .find(|link| *link.kind() == LinkKind::Url)
-                                    .map(|link| SuccessStyle::PushPrLink {
-                                        text: mapped.to_string(),
-                                        link: link.as_str().to_string(),
-                                    })
+                        finder
+                            .links(&output.stderr)
+                            .filter(|link| *link.kind() == LinkKind::Url)
+                            .map(|link| link.start()..link.end())
+                            .next()
+                            .map(|link| SuccessStyle::PushPrLink {
+                                text: mapped.to_string(),
+                                link: output.stderr[link].to_string(),
                             })
                     })
             } else {
@@ -173,9 +167,9 @@ mod tests {
     #[test]
     fn test_push_new_branch_pull_request() {
         let action = RemoteAction::Push(
-            SharedString::new_static("test_branch"),
+            SharedString::new("test_branch"),
             Remote {
-                name: SharedString::new_static("test_remote"),
+                name: SharedString::new("test_remote"),
             },
         );
 
@@ -206,9 +200,9 @@ mod tests {
     #[test]
     fn test_push_new_branch_merge_request() {
         let action = RemoteAction::Push(
-            SharedString::new_static("test_branch"),
+            SharedString::new("test_branch"),
             Remote {
-                name: SharedString::new_static("test_remote"),
+                name: SharedString::new("test_remote"),
             },
         );
 
@@ -242,19 +236,15 @@ mod tests {
     #[test]
     fn test_push_branch_existing_merge_request() {
         let action = RemoteAction::Push(
-            SharedString::new_static("test_branch"),
+            SharedString::new("test_branch"),
             Remote {
-                name: SharedString::new_static("test_remote"),
+                name: SharedString::new("test_remote"),
             },
         );
 
         let output = RemoteCommandOutput {
             stdout: String::new(),
-            // Simulate an extraneous link that should not be found in top 3 lines
             stderr: indoc! {"
-                ** WARNING: connection is not using a post-quantum key exchange algorithm.
-                ** This session may be vulnerable to \"store now, decrypt later\" attacks.
-                ** The server may need to be upgraded. See https://openssh.com/pq.html
                 Total 0 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)
                 remote:
                 remote: View merge request for test:
@@ -279,9 +269,9 @@ mod tests {
     #[test]
     fn test_push_new_branch_no_link() {
         let action = RemoteAction::Push(
-            SharedString::new_static("test_branch"),
+            SharedString::new("test_branch"),
             Remote {
-                name: SharedString::new_static("test_remote"),
+                name: SharedString::new("test_remote"),
             },
         );
 

@@ -1,11 +1,10 @@
-#![expect(clippy::result_large_err)]
 use std::{path::Path, sync::Arc};
 
 use dap::{Scope, StackFrame, Variable, requests::Variables};
 use editor::{Editor, EditorMode, MultiBuffer};
 use gpui::{BackgroundExecutor, TestAppContext, VisualTestContext};
 use language::{
-    Language, LanguageConfig, LanguageMatcher, rust_lang, tree_sitter_python,
+    Language, LanguageConfig, LanguageMatcher, tree_sitter_python, tree_sitter_rust,
     tree_sitter_typescript,
 };
 use project::{FakeFs, Project};
@@ -225,7 +224,7 @@ fn main() {
         .unwrap();
 
     buffer.update(cx, |buffer, cx| {
-        buffer.set_language(Some(rust_lang()), cx);
+        buffer.set_language(Some(Arc::new(rust_lang())), cx);
     });
 
     let (editor, cx) = cx.add_window_view(|window, cx| {
@@ -1522,6 +1521,23 @@ fn main() {
     });
 }
 
+fn rust_lang() -> Language {
+    let debug_variables_query = include_str!("../../../languages/src/rust/debugger.scm");
+    Language::new(
+        LanguageConfig {
+            name: "Rust".into(),
+            matcher: LanguageMatcher {
+                path_suffixes: vec!["rs".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Some(tree_sitter_rust::LANGUAGE.into()),
+    )
+    .with_debug_variables_query(debug_variables_query)
+    .unwrap()
+}
+
 #[gpui::test]
 async fn test_python_inline_values(executor: BackgroundExecutor, cx: &mut TestAppContext) {
     init_test(cx);
@@ -1827,7 +1843,7 @@ def process_data(untyped_param, typed_param: int, another_typed: str):
 }
 
 fn python_lang() -> Language {
-    let debug_variables_query = include_str!("../../../grammars/src/python/debugger.scm");
+    let debug_variables_query = include_str!("../../../languages/src/python/debugger.scm");
     Language::new(
         LanguageConfig {
             name: "Python".into(),
@@ -1843,23 +1859,21 @@ fn python_lang() -> Language {
     .unwrap()
 }
 
-fn go_lang() -> Arc<Language> {
-    let debug_variables_query = include_str!("../../../grammars/src/go/debugger.scm");
-    Arc::new(
-        Language::new(
-            LanguageConfig {
-                name: "Go".into(),
-                matcher: LanguageMatcher {
-                    path_suffixes: vec!["go".to_string()],
-                    ..Default::default()
-                },
+fn go_lang() -> Language {
+    let debug_variables_query = include_str!("../../../languages/src/go/debugger.scm");
+    Language::new(
+        LanguageConfig {
+            name: "Go".into(),
+            matcher: LanguageMatcher {
+                path_suffixes: vec!["go".to_string()],
                 ..Default::default()
             },
-            Some(tree_sitter_go::LANGUAGE.into()),
-        )
-        .with_debug_variables_query(debug_variables_query)
-        .unwrap(),
+            ..Default::default()
+        },
+        Some(tree_sitter_go::LANGUAGE.into()),
     )
+    .with_debug_variables_query(debug_variables_query)
+    .unwrap()
 }
 
 /// Test utility function for inline values testing
@@ -1877,7 +1891,7 @@ async fn test_inline_values_util(
     before: &str,
     after: &str,
     active_debug_line: Option<usize>,
-    language: Arc<Language>,
+    language: Language,
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
 ) {
@@ -2077,7 +2091,7 @@ async fn test_inline_values_util(
         .unwrap();
 
     buffer.update(cx, |buffer, cx| {
-        buffer.set_language(Some(language), cx);
+        buffer.set_language(Some(Arc::new(language)), cx);
     });
 
     let (editor, cx) = cx.add_window_view(|window, cx| {
@@ -2262,61 +2276,55 @@ fn main() {
     .await;
 }
 
-fn javascript_lang() -> Arc<Language> {
-    let debug_variables_query = include_str!("../../../grammars/src/javascript/debugger.scm");
-    Arc::new(
-        Language::new(
-            LanguageConfig {
-                name: "JavaScript".into(),
-                matcher: LanguageMatcher {
-                    path_suffixes: vec!["js".to_string()],
-                    ..Default::default()
-                },
+fn javascript_lang() -> Language {
+    let debug_variables_query = include_str!("../../../languages/src/javascript/debugger.scm");
+    Language::new(
+        LanguageConfig {
+            name: "JavaScript".into(),
+            matcher: LanguageMatcher {
+                path_suffixes: vec!["js".to_string()],
                 ..Default::default()
             },
-            Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        )
-        .with_debug_variables_query(debug_variables_query)
-        .unwrap(),
+            ..Default::default()
+        },
+        Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
     )
+    .with_debug_variables_query(debug_variables_query)
+    .unwrap()
 }
 
-fn typescript_lang() -> Arc<Language> {
-    let debug_variables_query = include_str!("../../../grammars/src/typescript/debugger.scm");
-    Arc::new(
-        Language::new(
-            LanguageConfig {
-                name: "TypeScript".into(),
-                matcher: LanguageMatcher {
-                    path_suffixes: vec!["ts".to_string()],
-                    ..Default::default()
-                },
+fn typescript_lang() -> Language {
+    let debug_variables_query = include_str!("../../../languages/src/typescript/debugger.scm");
+    Language::new(
+        LanguageConfig {
+            name: "TypeScript".into(),
+            matcher: LanguageMatcher {
+                path_suffixes: vec!["ts".to_string()],
                 ..Default::default()
             },
-            Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        )
-        .with_debug_variables_query(debug_variables_query)
-        .unwrap(),
+            ..Default::default()
+        },
+        Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
     )
+    .with_debug_variables_query(debug_variables_query)
+    .unwrap()
 }
 
-fn tsx_lang() -> Arc<Language> {
-    let debug_variables_query = include_str!("../../../grammars/src/tsx/debugger.scm");
-    Arc::new(
-        Language::new(
-            LanguageConfig {
-                name: "TSX".into(),
-                matcher: LanguageMatcher {
-                    path_suffixes: vec!["tsx".to_string()],
-                    ..Default::default()
-                },
+fn tsx_lang() -> Language {
+    let debug_variables_query = include_str!("../../../languages/src/tsx/debugger.scm");
+    Language::new(
+        LanguageConfig {
+            name: "TSX".into(),
+            matcher: LanguageMatcher {
+                path_suffixes: vec!["tsx".to_string()],
                 ..Default::default()
             },
-            Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        )
-        .with_debug_variables_query(debug_variables_query)
-        .unwrap(),
+            ..Default::default()
+        },
+        Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
     )
+    .with_debug_variables_query(debug_variables_query)
+    .unwrap()
 }
 
 #[gpui::test]

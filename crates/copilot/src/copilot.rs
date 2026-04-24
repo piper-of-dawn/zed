@@ -1,38 +1,39 @@
-mod copilot_edit_prediction_delegate;
+pub mod copilot_chat;
+mod copilot_completion_provider;
+pub mod copilot_responses;
 pub mod request;
+mod sign_in;
 
-use crate::request::{
-    DidFocus, DidFocusParams, FormattingOptions, InlineCompletionContext,
-    InlineCompletionTriggerKind, InlineCompletions, NextEditSuggestions,
-};
+use crate::sign_in::initiate_sign_in_within_workspace;
 use ::fs::Fs;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{HashMap, HashSet};
 use command_palette_hooks::CommandPaletteFilter;
-use futures::future;
-use futures::{Future, FutureExt, TryFutureExt, channel::oneshot, future::Shared, select_biased};
+use futures::{Future, FutureExt, TryFutureExt, channel::oneshot, future::Shared};
 use gpui::{
-    App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter, Global, Subscription,
-    Task, WeakEntity, actions,
+    App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter, Global, Task,
+    WeakEntity, actions,
 };
-use language::language_settings::{AllLanguageSettings, CopilotSettings};
+use http_client::HttpClient;
+use language::language_settings::CopilotSettings;
 use language::{
     Anchor, Bias, Buffer, BufferSnapshot, Language, PointUtf16, ToPointUtf16,
-    language_settings::{EditPredictionProvider, all_language_settings},
+    language_settings::{EditPredictionProvider, all_language_settings, language_settings},
     point_from_lsp, point_to_lsp,
 };
 use lsp::{LanguageServer, LanguageServerBinary, LanguageServerId, LanguageServerName};
 use node_runtime::{NodeRuntime, VersionStrategy};
 use parking_lot::Mutex;
-use project::project_settings::ProjectSettings;
-use project::{DisableAiSettings, Project};
-use request::DidChangeStatus;
+use project::DisableAiSettings;
+use request::StatusNotification;
 use semver::Version;
 use serde_json::json;
-use settings::{Settings, SettingsStore};
+use settings::Settings;
+use settings::SettingsStore;
+use sign_in::{reinstall_and_sign_in_within_workspace, sign_out_within_workspace};
+use std::collections::hash_map::Entry;
 use std::{
     any::TypeId,
-    collections::hash_map::Entry,
     env,
     ffi::OsString,
     mem,
@@ -41,10 +42,12 @@ use std::{
     sync::Arc,
 };
 use sum_tree::Dimensions;
+use util::rel_path::RelPath;
 use util::{ResultExt, fs::remove_matching};
-use workspace::AppState;
+use workspace::Workspace;
 
-pub use crate::copilot_edit_prediction_delegate::CopilotEditPredictionDelegate;
+pub use crate::copilot_completion_provider::CopilotCompletionProvider;
+pub use crate::sign_in::{CopilotCodeVerification, initiate_sign_in, reinstall_and_sign_in};
 
 actions!(
     copilot,
@@ -63,6 +66,57 @@ actions!(
         SignOut
     ]
 );
+
+pub fn init(
+    new_server_id: LanguageServerId,
+    fs: Arc<dyn Fs>,
+    http: Arc<dyn HttpClient>,
+    node_runtime: NodeRuntime,
+    cx: &mut App,
+) {
+    let language_settings = all_language_settings(None, cx);
+    let configuration = copilot_chat::CopilotChatConfiguration {
+        enterprise_uri: language_settings
+            .edit_predictions
+            .copilot
+            .enterprise_uri
+            .clone(),
+    };
+    copilot_chat::init(fs.clone(), http.clone(), configuration, cx);
+
+    let copilot = cx.new(move |cx| Copilot::start(new_server_id, fs, node_runtime, cx));
+    Copilot::set_global(copilot.clone(), cx);
+    cx.observe(&copilot, |copilot, cx| {
+        copilot.update(cx, |copilot, cx| copilot.update_action_visibilities(cx));
+    })
+    .detach();
+    cx.observe_global::<SettingsStore>(|cx| {
+        if let Some(copilot) = Copilot::global(cx) {
+            copilot.update(cx, |copilot, cx| copilot.update_action_visibilities(cx));
+        }
+    })
+    .detach();
+
+    cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
+        workspace.register_action(|workspace, _: &SignIn, window, cx| {
+            if let Some(copilot) = Copilot::global(cx) {
+                let is_reinstall = false;
+                initiate_sign_in_within_workspace(workspace, copilot, is_reinstall, window, cx);
+            }
+        });
+        workspace.register_action(|workspace, _: &Reinstall, window, cx| {
+            if let Some(copilot) = Copilot::global(cx) {
+                reinstall_and_sign_in_within_workspace(workspace, copilot, window, cx);
+            }
+        });
+        workspace.register_action(|workspace, _: &SignOut, _window, cx| {
+            if let Some(copilot) = Copilot::global(cx) {
+                sign_out_within_workspace(workspace, copilot, cx);
+            }
+        });
+    })
+    .detach();
+}
 
 enum CopilotServer {
     Disabled,
@@ -253,181 +307,53 @@ pub struct Copilot {
     server: CopilotServer,
     buffers: HashSet<WeakEntity<Buffer>>,
     server_id: LanguageServerId,
-    _subscriptions: Vec<Subscription>,
+    _subscription: gpui::Subscription,
 }
 
 pub enum Event {
+    CopilotLanguageServerStarted,
     CopilotAuthSignedIn,
     CopilotAuthSignedOut,
 }
 
 impl EventEmitter<Event> for Copilot {}
 
-#[derive(Clone)]
-pub struct GlobalCopilotAuth(pub Entity<Copilot>);
+struct GlobalCopilot(Entity<Copilot>);
 
-impl GlobalCopilotAuth {
-    pub fn set_global(
-        server_id: LanguageServerId,
-        fs: Arc<dyn Fs>,
-        node_runtime: NodeRuntime,
-        cx: &mut App,
-    ) -> GlobalCopilotAuth {
-        let auth =
-            GlobalCopilotAuth(cx.new(|cx| Copilot::new(None, server_id, fs, node_runtime, cx)));
-        cx.set_global(auth.clone());
-        auth
-    }
-    pub fn try_global(cx: &mut App) -> Option<&GlobalCopilotAuth> {
-        cx.try_global()
-    }
-
-    pub fn try_get_or_init(app_state: Arc<AppState>, cx: &mut App) -> Option<GlobalCopilotAuth> {
-        let ai_enabled = !DisableAiSettings::get(None, cx).disable_ai;
-
-        if let Some(copilot) = cx.try_global::<Self>().cloned() {
-            if ai_enabled {
-                Some(copilot)
-            } else {
-                cx.remove_global::<Self>();
-                None
-            }
-        } else if ai_enabled {
-            Some(Self::set_global(
-                app_state.languages.next_language_server_id(),
-                app_state.fs.clone(),
-                app_state.node_runtime.clone(),
-                cx,
-            ))
-        } else {
-            None
-        }
-    }
-}
-impl Global for GlobalCopilotAuth {}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CompletionSource {
-    NextEditSuggestion,
-    InlineCompletion,
-}
-
-/// Copilot's NextEditSuggestion response, with coordinates converted to Anchors.
-#[derive(Clone)]
-pub(crate) struct CopilotEditPrediction {
-    pub(crate) buffer: Entity<Buffer>,
-    pub(crate) range: Range<Anchor>,
-    pub(crate) text: String,
-    pub(crate) command: Option<lsp::Command>,
-    pub(crate) snapshot: BufferSnapshot,
-    pub(crate) source: CompletionSource,
-}
+impl Global for GlobalCopilot {}
 
 impl Copilot {
-    pub fn new(
-        project: Option<Entity<Project>>,
+    pub fn global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalCopilot>()
+            .map(|model| model.0.clone())
+    }
+
+    pub fn set_global(copilot: Entity<Self>, cx: &mut App) {
+        cx.set_global(GlobalCopilot(copilot));
+    }
+
+    fn start(
         new_server_id: LanguageServerId,
         fs: Arc<dyn Fs>,
         node_runtime: NodeRuntime,
         cx: &mut Context<Self>,
     ) -> Self {
-        let send_focus_notification = project.map(|project| {
-            cx.subscribe(&project, |this, project, e: &project::Event, cx| {
-                if let project::Event::ActiveEntryChanged(new_entry) = e
-                    && let Ok(running) = this.server.as_authenticated()
-                {
-                    let uri = new_entry
-                        .and_then(|id| project.read(cx).path_for_entry(id, cx))
-                        .and_then(|entry| project.read(cx).absolute_path(&entry, cx))
-                        .and_then(|abs_path| lsp::Uri::from_file_path(abs_path).ok());
-
-                    _ = running.lsp.notify::<DidFocus>(DidFocusParams { uri });
-                }
-            })
-        });
-        let global_authentication_events =
-            cx.try_global::<GlobalCopilotAuth>().cloned().map(|auth| {
-                cx.subscribe(&auth.0, |_, _, _: &Event, cx| {
-                    let request_timeout = ProjectSettings::get_global(cx)
-                        .global_lsp_settings
-                        .get_request_timeout();
-                    cx.spawn(async move |this, cx| {
-                        let Some(server) = this
-                            .update(cx, |this, _| this.language_server().cloned())
-                            .ok()
-                            .flatten()
-                        else {
-                            return;
-                        };
-                        let status = server
-                            .request::<request::CheckStatus>(
-                                request::CheckStatusParams {
-                                    local_checks_only: false,
-                                },
-                                request_timeout,
-                            )
-                            .await
-                            .into_response()
-                            .ok();
-                        if let Some(status) = status {
-                            this.update(cx, |copilot, cx| {
-                                copilot.update_sign_in_status(status, cx);
-                            })
-                            .ok();
-                        }
-                    })
-                    .detach()
-                })
-            });
-        let _subscriptions = std::iter::once(cx.on_app_quit(Self::shutdown_language_server))
-            .chain(send_focus_notification)
-            .chain(global_authentication_events)
-            .collect();
         let mut this = Self {
             server_id: new_server_id,
             fs,
             node_runtime,
             server: CopilotServer::Disabled,
             buffers: Default::default(),
-            _subscriptions,
+            _subscription: cx.on_app_quit(Self::shutdown_language_server),
         };
         this.start_copilot(true, false, cx);
         cx.observe_global::<SettingsStore>(move |this, cx| {
-            let ai_disabled = DisableAiSettings::get_global(cx).disable_ai;
-
-            if ai_disabled {
-                // Stop the server if AI is disabled
-                if !matches!(this.server, CopilotServer::Disabled) {
-                    let shutdown = match mem::replace(&mut this.server, CopilotServer::Disabled) {
-                        CopilotServer::Running(server) => {
-                            let shutdown_future = server.lsp.shutdown();
-                            Some(cx.background_spawn(async move {
-                                if let Some(fut) = shutdown_future {
-                                    fut.await;
-                                }
-                            }))
-                        }
-                        _ => None,
-                    };
-                    if let Some(task) = shutdown {
-                        task.detach();
-                    }
-                    cx.notify();
-                }
-            } else {
-                // Only start if AI is enabled
-                this.start_copilot(true, false, cx);
-                if let Ok(server) = this.server.as_running() {
-                    notify_did_change_config_to_server(&server.lsp, cx)
-                        .context("copilot setting change: did change configuration")
-                        .log_err();
-                }
+            this.start_copilot(true, false, cx);
+            if let Ok(server) = this.server.as_running() {
+                notify_did_change_config_to_server(&server.lsp, cx)
+                    .context("copilot setting change: did change configuration")
+                    .log_err();
             }
-            this.update_action_visibilities(cx);
-        })
-        .detach();
-        cx.observe_self(|copilot, cx| {
-            copilot.update_action_visibilities(cx);
         })
         .detach();
         this
@@ -449,15 +375,12 @@ impl Copilot {
         }
     }
 
-    pub fn start_copilot(
+    fn start_copilot(
         &mut self,
         check_edit_prediction_provider: bool,
         awaiting_sign_in_after_start: bool,
         cx: &mut Context<Self>,
     ) {
-        if DisableAiSettings::get_global(cx).disable_ai {
-            return;
-        }
         if !matches!(self.server, CopilotServer::Disabled) {
             return;
         }
@@ -522,7 +445,6 @@ impl Copilot {
     #[cfg(any(test, feature = "test-support"))]
     pub fn fake(cx: &mut gpui::TestAppContext) -> (Entity<Self>, lsp::FakeLanguageServer) {
         use fs::FakeFs;
-        use gpui::Subscription;
         use lsp::FakeLanguageServer;
         use node_runtime::NodeRuntime;
 
@@ -538,7 +460,6 @@ impl Copilot {
             &mut cx.to_async(),
         );
         let node_runtime = NodeRuntime::unavailable();
-        let send_focus_notification = Subscription::new(|| {});
         let this = cx.new(|cx| Self {
             server_id: LanguageServerId(0),
             fs: FakeFs::new(cx.background_executor().clone()),
@@ -548,10 +469,7 @@ impl Copilot {
                 sign_in_status: SignInStatus::Authorized,
                 registered_buffers: Default::default(),
             }),
-            _subscriptions: vec![
-                send_focus_notification,
-                cx.on_app_quit(Self::shutdown_language_server),
-            ],
+            _subscription: cx.on_app_quit(Self::shutdown_language_server),
             buffers: Default::default(),
         });
         (this, fake_server)
@@ -601,59 +519,7 @@ impl Copilot {
             )?;
 
             server
-                .on_notification::<DidChangeStatus, _>({
-                    let this = this.clone();
-                    move |params, cx| {
-                        if params.kind == request::StatusKind::Normal {
-                            let this = this.clone();
-                            cx.spawn(async move |cx| {
-                                let lsp = this
-                                    .read_with(cx, |copilot, _| {
-                                        if let CopilotServer::Running(server) = &copilot.server {
-                                            Some(server.lsp.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .ok()
-                                    .flatten();
-                                let Some(lsp) = lsp else { return };
-                                let request_timeout = cx.update(|cx| {
-                                    ProjectSettings::get_global(cx)
-                                        .global_lsp_settings
-                                        .get_request_timeout()
-                                });
-                                let status = lsp
-                                    .request::<request::CheckStatus>(
-                                        request::CheckStatusParams {
-                                            local_checks_only: false,
-                                        },
-                                        request_timeout,
-                                    )
-                                    .await
-                                    .into_response()
-                                    .ok();
-                                if let Some(status) = status {
-                                    this.update(cx, |copilot, cx| {
-                                        copilot.update_sign_in_status(status, cx);
-                                    })
-                                    .ok();
-                                }
-                            })
-                            .detach();
-                        }
-                    }
-                })
-                .detach();
-
-            server
-                .on_request::<lsp::request::ShowDocument, _, _>(move |params, cx| {
-                    if params.external.unwrap_or(false) {
-                        let url = params.uri.to_string();
-                        cx.update(|cx| cx.open_url(&url));
-                    }
-                    async move { Ok(lsp::ShowDocumentResult { success: true }) }
-                })
+                .on_notification::<StatusNotification, _>(|_, _| { /* Silence the notification */ })
                 .detach();
 
             let configuration = lsp::DidChangeConfigurationParams {
@@ -672,36 +538,21 @@ impl Copilot {
             };
             let editor_info_json = serde_json::to_value(&editor_info)?;
 
-            let request_timeout = cx.update(|app| {
-                ProjectSettings::get_global(app)
-                    .global_lsp_settings
-                    .get_request_timeout()
-            });
-
             let server = cx
                 .update(|cx| {
-                    let mut params = server.default_initialize_params(false, false, cx);
+                    let mut params = server.default_initialize_params(false, cx);
                     params.initialization_options = Some(editor_info_json);
-                    params
-                        .capabilities
-                        .window
-                        .get_or_insert_with(Default::default)
-                        .show_document =
-                        Some(lsp::ShowDocumentClientCapabilities { support: true });
-                    server.initialize(params, configuration.into(), request_timeout, cx)
-                })
+                    server.initialize(params, configuration.into(), cx)
+                })?
                 .await?;
 
             this.update(cx, |_, cx| notify_did_change_config_to_server(&server, cx))?
                 .context("copilot: did change configuration")?;
 
             let status = server
-                .request::<request::CheckStatus>(
-                    request::CheckStatusParams {
-                        local_checks_only: false,
-                    },
-                    request_timeout,
-                )
+                .request::<request::CheckStatus>(request::CheckStatusParams {
+                    local_checks_only: false,
+                })
                 .await
                 .into_response()
                 .context("copilot: check status")?;
@@ -712,14 +563,6 @@ impl Copilot {
         let server = start_language_server.await;
         this.update(cx, |this, cx| {
             cx.notify();
-
-            if env::var("ZED_FORCE_COPILOT_ERROR").is_ok() {
-                this.server = CopilotServer::Error(
-                    "Forced error for testing (ZED_FORCE_COPILOT_ERROR)".into(),
-                );
-                return;
-            }
-
             match server {
                 Ok((server, status)) => {
                     this.server = CopilotServer::Running(RunningCopilotServer {
@@ -729,6 +572,7 @@ impl Copilot {
                         },
                         registered_buffers: Default::default(),
                     });
+                    cx.emit(Event::CopilotLanguageServerStarted);
                     this.update_sign_in_status(status, cx);
                 }
                 Err(error) => {
@@ -740,17 +584,7 @@ impl Copilot {
         .ok();
     }
 
-    pub fn is_authenticated(&self) -> bool {
-        return matches!(
-            self.server,
-            CopilotServer::Running(RunningCopilotServer {
-                sign_in_status: SignInStatus::Authorized,
-                ..
-            })
-        );
-    }
-
-    pub fn sign_in(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+    pub(crate) fn sign_in(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         if let CopilotServer::Running(server) = &mut self.server {
             let task = match &server.sign_in_status {
                 SignInStatus::Authorized => Task::ready(Ok(())).shared(),
@@ -760,44 +594,55 @@ impl Copilot {
                 }
                 SignInStatus::SignedOut { .. } | SignInStatus::Unauthorized => {
                     let lsp = server.lsp.clone();
-
-                    let request_timeout = ProjectSettings::get_global(cx)
-                        .global_lsp_settings
-                        .get_request_timeout();
-
                     let task = cx
                         .spawn(async move |this, cx| {
                             let sign_in = async {
-                                let flow = lsp
-                                    .request::<request::SignIn>(
-                                        request::SignInParams {},
-                                        request_timeout,
+                                let sign_in = lsp
+                                    .request::<request::SignInInitiate>(
+                                        request::SignInInitiateParams {},
                                     )
                                     .await
                                     .into_response()
                                     .context("copilot sign-in")?;
-
-                                this.update(cx, |this, cx| {
-                                    if let CopilotServer::Running(RunningCopilotServer {
-                                        sign_in_status: status,
-                                        ..
-                                    }) = &mut this.server
-                                        && let SignInStatus::SigningIn {
-                                            prompt: prompt_flow,
-                                            ..
-                                        } = status
-                                    {
-                                        *prompt_flow = Some(flow.clone());
-                                        cx.notify();
+                                match sign_in {
+                                    request::SignInInitiateResult::AlreadySignedIn { user } => {
+                                        Ok(request::SignInStatus::Ok { user: Some(user) })
                                     }
-                                })?;
-
-                                anyhow::Ok(())
+                                    request::SignInInitiateResult::PromptUserDeviceFlow(flow) => {
+                                        this.update(cx, |this, cx| {
+                                            if let CopilotServer::Running(RunningCopilotServer {
+                                                sign_in_status: status,
+                                                ..
+                                            }) = &mut this.server
+                                                && let SignInStatus::SigningIn {
+                                                    prompt: prompt_flow,
+                                                    ..
+                                                } = status
+                                            {
+                                                *prompt_flow = Some(flow.clone());
+                                                cx.notify();
+                                            }
+                                        })?;
+                                        let response = lsp
+                                            .request::<request::SignInConfirm>(
+                                                request::SignInConfirmParams {
+                                                    user_code: flow.user_code,
+                                                },
+                                            )
+                                            .await
+                                            .into_response()
+                                            .context("copilot: sign in confirm")?;
+                                        Ok(response)
+                                    }
+                                }
                             };
 
                             let sign_in = sign_in.await;
                             this.update(cx, |this, cx| match sign_in {
-                                Ok(()) => Ok(()),
+                                Ok(status) => {
+                                    this.update_sign_in_status(status, cx);
+                                    Ok(())
+                                }
                                 Err(error) => {
                                     this.update_sign_in_status(
                                         request::SignInStatus::NotSignedIn,
@@ -825,18 +670,14 @@ impl Copilot {
         }
     }
 
-    pub fn sign_out(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+    pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         self.update_sign_in_status(request::SignInStatus::NotSignedIn, cx);
         match &self.server {
             CopilotServer::Running(RunningCopilotServer { lsp: server, .. }) => {
-                let request_timeout = ProjectSettings::get_global(cx)
-                    .global_lsp_settings
-                    .get_request_timeout();
-
                 let server = server.clone();
                 cx.background_spawn(async move {
                     server
-                        .request::<request::SignOut>(request::SignOutParams {}, request_timeout)
+                        .request::<request::SignOut>(request::SignOutParams {})
                         .await
                         .into_response()
                         .context("copilot: sign in confirm")?;
@@ -851,7 +692,7 @@ impl Copilot {
         }
     }
 
-    pub fn reinstall(&mut self, cx: &mut Context<Self>) -> Shared<Task<()>> {
+    pub(crate) fn reinstall(&mut self, cx: &mut Context<Self>) -> Shared<Task<()>> {
         let language_settings = all_language_settings(None, cx);
         let env = self.build_env(&language_settings.edit_predictions.copilot);
         let start_task = cx
@@ -949,7 +790,7 @@ impl Copilot {
             && let Some(registered_buffer) = server.registered_buffers.get_mut(&buffer.entity_id())
         {
             match event {
-                language::BufferEvent::Edited { .. } => {
+                language::BufferEvent::Edited => {
                     drop(registered_buffer.report_changes(&buffer, cx));
                 }
                 language::BufferEvent::Saved => {
@@ -966,7 +807,7 @@ impl Copilot {
                         .ok();
                 }
                 language::BufferEvent::FileHandleChanged
-                | language::BufferEvent::LanguageChanged(_) => {
+                | language::BufferEvent::LanguageChanged => {
                     let new_language_id = id_for_language(buffer.read(cx).language());
                     let Ok(new_uri) = uri_for_buffer(&buffer, cx) else {
                         return Ok(());
@@ -1021,213 +862,155 @@ impl Copilot {
         }
     }
 
-    pub(crate) fn completions(
+    pub fn completions<T>(
         &mut self,
         buffer: &Entity<Buffer>,
-        position: Anchor,
+        position: T,
         cx: &mut Context<Self>,
-    ) -> Task<Result<Vec<CopilotEditPrediction>>> {
-        self.register_buffer(buffer, cx);
-
-        let server = match self.server.as_authenticated() {
-            Ok(server) => server,
-            Err(error) => return Task::ready(Err(error)),
-        };
-        let buffer_entity = buffer.clone();
-        let lsp = server.lsp.clone();
-        let Some(registered_buffer) = server.registered_buffers.get_mut(&buffer.entity_id()) else {
-            return Task::ready(Err(anyhow::anyhow!("buffer not registered")));
-        };
-        let pending_snapshot = registered_buffer.report_changes(buffer, cx);
-        let buffer = buffer.read(cx);
-        let uri = registered_buffer.uri.clone();
-        let position = position.to_point_utf16(buffer);
-        let snapshot = buffer.snapshot();
-        let settings = snapshot.settings_at(0, cx);
-        let tab_size = settings.tab_size.get();
-        let hard_tabs = settings.hard_tabs;
-        drop(settings);
-
-        let request_timeout = ProjectSettings::get_global(cx)
-            .global_lsp_settings
-            .get_request_timeout();
-
-        let nes_enabled = AllLanguageSettings::get_global(cx)
-            .edit_predictions
-            .copilot
-            .enable_next_edit_suggestions
-            .unwrap_or(true);
-
-        cx.background_spawn(async move {
-            let (version, snapshot) = pending_snapshot.await?;
-            let lsp_position = point_to_lsp(position);
-
-            let nes_fut = if nes_enabled {
-                lsp.request::<NextEditSuggestions>(
-                    request::NextEditSuggestionsParams {
-                        text_document: lsp::VersionedTextDocumentIdentifier {
-                            uri: uri.clone(),
-                            version,
-                        },
-                        position: lsp_position,
-                    },
-                    request_timeout,
-                )
-                .map(|resp| {
-                    resp.into_response()
-                        .ok()
-                        .map(|result| {
-                            result
-                                .edits
-                                .into_iter()
-                                .map(|completion| {
-                                    let start = snapshot.clip_point_utf16(
-                                        point_from_lsp(completion.range.start),
-                                        Bias::Left,
-                                    );
-                                    let end = snapshot.clip_point_utf16(
-                                        point_from_lsp(completion.range.end),
-                                        Bias::Left,
-                                    );
-                                    CopilotEditPrediction {
-                                        buffer: buffer_entity.clone(),
-                                        range: snapshot.anchor_before(start)
-                                            ..snapshot.anchor_after(end),
-                                        text: completion.text,
-                                        command: completion.command,
-                                        snapshot: snapshot.clone(),
-                                        source: CompletionSource::NextEditSuggestion,
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                })
-                .left_future()
-                .fuse()
-            } else {
-                future::ready(Vec::<CopilotEditPrediction>::new())
-                    .right_future()
-                    .fuse()
-            };
-
-            let inline_fut = lsp
-                .request::<InlineCompletions>(
-                    request::InlineCompletionsParams {
-                        text_document: lsp::VersionedTextDocumentIdentifier {
-                            uri: uri.clone(),
-                            version,
-                        },
-                        position: lsp_position,
-                        context: InlineCompletionContext {
-                            trigger_kind: InlineCompletionTriggerKind::Automatic,
-                        },
-                        formatting_options: Some(FormattingOptions {
-                            tab_size,
-                            insert_spaces: !hard_tabs,
-                        }),
-                    },
-                    request_timeout,
-                )
-                .map(|resp| {
-                    resp.into_response()
-                        .ok()
-                        .map(|result| {
-                            result
-                                .items
-                                .into_iter()
-                                .map(|item| {
-                                    let start = snapshot.clip_point_utf16(
-                                        point_from_lsp(item.range.start),
-                                        Bias::Left,
-                                    );
-                                    let end = snapshot.clip_point_utf16(
-                                        point_from_lsp(item.range.end),
-                                        Bias::Left,
-                                    );
-                                    CopilotEditPrediction {
-                                        buffer: buffer_entity.clone(),
-                                        range: snapshot.anchor_before(start)
-                                            ..snapshot.anchor_after(end),
-                                        text: item.insert_text,
-                                        command: item.command,
-                                        snapshot: snapshot.clone(),
-                                        source: CompletionSource::InlineCompletion,
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                })
-                .fuse();
-
-            futures::pin_mut!(nes_fut, inline_fut);
-
-            let mut nes_result: Option<Vec<CopilotEditPrediction>> = None;
-            let mut inline_result: Option<Vec<CopilotEditPrediction>> = None;
-
-            loop {
-                select_biased! {
-                    nes = nes_fut => {
-                        if !nes.is_empty() {
-                            return Ok(nes);
-                        }
-                        nes_result = Some(nes);
-                    }
-                    inline = inline_fut => {
-                        if !inline.is_empty() {
-                            return Ok(inline);
-                        }
-                        inline_result = Some(inline);
-                    }
-                    complete => break,
-                }
-
-                if let (Some(nes), Some(inline)) = (&nes_result, &inline_result) {
-                    return if !nes.is_empty() {
-                        Ok(nes.clone())
-                    } else {
-                        Ok(inline.clone())
-                    };
-                }
-            }
-
-            Ok(nes_result.or(inline_result).unwrap_or_default())
-        })
+    ) -> Task<Result<Vec<Completion>>>
+    where
+        T: ToPointUtf16,
+    {
+        self.request_completions::<request::GetCompletions, _>(buffer, position, cx)
     }
 
-    pub(crate) fn accept_completion(
+    pub fn completions_cycling<T>(
         &mut self,
-        completion: &CopilotEditPrediction,
+        buffer: &Entity<Buffer>,
+        position: T,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<Completion>>>
+    where
+        T: ToPointUtf16,
+    {
+        self.request_completions::<request::GetCompletionsCycling, _>(buffer, position, cx)
+    }
+
+    pub fn accept_completion(
+        &mut self,
+        completion: &Completion,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let server = match self.server.as_authenticated() {
             Ok(server) => server,
             Err(error) => return Task::ready(Err(error)),
         };
-        if let Some(command) = &completion.command {
-            let request_timeout = ProjectSettings::get_global(cx)
-                .global_lsp_settings
-                .get_request_timeout();
+        let request =
+            server
+                .lsp
+                .request::<request::NotifyAccepted>(request::NotifyAcceptedParams {
+                    uuid: completion.uuid.clone(),
+                });
+        cx.background_spawn(async move {
+            request
+                .await
+                .into_response()
+                .context("copilot: notify accepted")?;
+            Ok(())
+        })
+    }
 
-            let request = server.lsp.request::<lsp::ExecuteCommand>(
-                lsp::ExecuteCommandParams {
-                    command: command.command.clone(),
-                    arguments: command.arguments.clone().unwrap_or_default(),
-                    ..Default::default()
-                },
-                request_timeout,
-            );
-            cx.background_spawn(async move {
-                request
-                    .await
-                    .into_response()
-                    .context("copilot: notify accepted")?;
-                Ok(())
-            })
-        } else {
-            Task::ready(Ok(()))
-        }
+    pub fn discard_completions(
+        &mut self,
+        completions: &[Completion],
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let server = match self.server.as_authenticated() {
+            Ok(server) => server,
+            Err(_) => return Task::ready(Ok(())),
+        };
+        let request =
+            server
+                .lsp
+                .request::<request::NotifyRejected>(request::NotifyRejectedParams {
+                    uuids: completions
+                        .iter()
+                        .map(|completion| completion.uuid.clone())
+                        .collect(),
+                });
+        cx.background_spawn(async move {
+            request
+                .await
+                .into_response()
+                .context("copilot: notify rejected")?;
+            Ok(())
+        })
+    }
+
+    fn request_completions<R, T>(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: T,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<Completion>>>
+    where
+        R: 'static
+            + lsp::request::Request<
+                Params = request::GetCompletionsParams,
+                Result = request::GetCompletionsResult,
+            >,
+        T: ToPointUtf16,
+    {
+        self.register_buffer(buffer, cx);
+
+        let server = match self.server.as_authenticated() {
+            Ok(server) => server,
+            Err(error) => return Task::ready(Err(error)),
+        };
+        let lsp = server.lsp.clone();
+        let registered_buffer = server
+            .registered_buffers
+            .get_mut(&buffer.entity_id())
+            .unwrap();
+        let snapshot = registered_buffer.report_changes(buffer, cx);
+        let buffer = buffer.read(cx);
+        let uri = registered_buffer.uri.clone();
+        let position = position.to_point_utf16(buffer);
+        let settings = language_settings(
+            buffer.language_at(position).map(|l| l.name()),
+            buffer.file(),
+            cx,
+        );
+        let tab_size = settings.tab_size;
+        let hard_tabs = settings.hard_tabs;
+        let relative_path = buffer
+            .file()
+            .map_or(RelPath::empty().into(), |file| file.path().clone());
+
+        cx.background_spawn(async move {
+            let (version, snapshot) = snapshot.await?;
+            let result = lsp
+                .request::<R>(request::GetCompletionsParams {
+                    doc: request::GetCompletionsDocument {
+                        uri,
+                        tab_size: tab_size.into(),
+                        indent_size: 1,
+                        insert_spaces: !hard_tabs,
+                        relative_path: relative_path.to_proto(),
+                        position: point_to_lsp(position),
+                        version: version.try_into().unwrap(),
+                    },
+                })
+                .await
+                .into_response()
+                .context("copilot: get completions")?;
+            let completions = result
+                .completions
+                .into_iter()
+                .map(|completion| {
+                    let start = snapshot
+                        .clip_point_utf16(point_from_lsp(completion.range.start), Bias::Left);
+                    let end =
+                        snapshot.clip_point_utf16(point_from_lsp(completion.range.end), Bias::Left);
+                    Completion {
+                        uuid: completion.uuid,
+                        range: snapshot.anchor_before(start)..snapshot.anchor_after(end),
+                        text: completion.text,
+                    }
+                })
+                .collect();
+            anyhow::Ok(completions)
+        })
     }
 
     pub fn status(&self) -> Status {
@@ -1252,11 +1035,7 @@ impl Copilot {
         }
     }
 
-    pub fn update_sign_in_status(
-        &mut self,
-        lsp_status: request::SignInStatus,
-        cx: &mut Context<Self>,
-    ) {
+    fn update_sign_in_status(&mut self, lsp_status: request::SignInStatus, cx: &mut Context<Self>) {
         self.buffers.retain(|buffer| buffer.is_upgradable());
 
         if let Ok(server) = self.server.as_running() {
@@ -1401,7 +1180,7 @@ async fn ensure_node_version_for_copilot(node_path: &Path) -> anyhow::Result<()>
 
     log::info!("Checking Node.js version for Copilot at: {:?}", node_path);
 
-    let output = util::command::new_command(node_path)
+    let output = util::command::new_smol_command(node_path)
         .arg("--version")
         .output()
         .await
@@ -1456,10 +1235,7 @@ async fn get_copilot_lsp(fs: Arc<dyn Fs>, node_runtime: NodeRuntime) -> anyhow::
         .await;
     if should_install {
         node_runtime
-            .npm_install_packages(
-                paths::copilot_dir(),
-                &[(PACKAGE_NAME, &latest_version.to_string())],
-            )
+            .npm_install_packages(paths::copilot_dir(), &[(PACKAGE_NAME, &latest_version)])
             .await?;
     }
 
@@ -1469,123 +1245,11 @@ async fn get_copilot_lsp(fs: Arc<dyn Fs>, node_runtime: NodeRuntime) -> anyhow::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fs::FakeFs;
     use gpui::TestAppContext;
-    use language::language_settings::AllLanguageSettings;
-    use node_runtime::NodeRuntime;
-    use settings::{Settings, SettingsStore};
-    use util::{
-        path,
-        paths::PathStyle,
-        rel_path::{RelPath, rel_path},
-    };
-
-    #[gpui::test]
-    async fn test_copilot_does_not_start_when_ai_disabled(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let store = SettingsStore::test(cx);
-            cx.set_global(store);
-            DisableAiSettings::register(cx);
-            AllLanguageSettings::register(cx);
-
-            // Set disable_ai to true before creating Copilot
-            DisableAiSettings::override_global(DisableAiSettings { disable_ai: true }, cx);
-        });
-
-        let copilot = cx.new(|cx| Copilot {
-            server_id: LanguageServerId(0),
-            fs: FakeFs::new(cx.background_executor().clone()),
-            node_runtime: NodeRuntime::unavailable(),
-            server: CopilotServer::Disabled,
-            buffers: Default::default(),
-            _subscriptions: vec![],
-        });
-
-        // Try to start copilot - it should remain disabled
-        copilot.update(cx, |copilot, cx| {
-            copilot.start_copilot(false, false, cx);
-        });
-
-        // Verify the server is still disabled
-        copilot.read_with(cx, |copilot, _| {
-            assert!(
-                matches!(copilot.server, CopilotServer::Disabled),
-                "Copilot should not start when disable_ai is true"
-            );
-        });
-    }
-
-    #[gpui::test]
-    async fn test_copilot_stops_when_ai_becomes_disabled(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let store = SettingsStore::test(cx);
-            cx.set_global(store);
-            DisableAiSettings::register(cx);
-            AllLanguageSettings::register(cx);
-
-            // AI is initially enabled
-            DisableAiSettings::override_global(DisableAiSettings { disable_ai: false }, cx);
-        });
-
-        // Create a fake Copilot that's already running, with the settings observer
-        let (copilot, _lsp) = Copilot::fake(cx);
-
-        // Add the settings observer that handles disable_ai changes
-        copilot.update(cx, |_, cx| {
-            cx.observe_global::<SettingsStore>(move |this, cx| {
-                let ai_disabled = DisableAiSettings::get_global(cx).disable_ai;
-
-                if ai_disabled {
-                    if !matches!(this.server, CopilotServer::Disabled) {
-                        let shutdown = match mem::replace(&mut this.server, CopilotServer::Disabled)
-                        {
-                            CopilotServer::Running(server) => {
-                                let shutdown_future = server.lsp.shutdown();
-                                Some(cx.background_spawn(async move {
-                                    if let Some(fut) = shutdown_future {
-                                        fut.await;
-                                    }
-                                }))
-                            }
-                            _ => None,
-                        };
-                        if let Some(task) = shutdown {
-                            task.detach();
-                        }
-                        cx.notify();
-                    }
-                }
-            })
-            .detach();
-        });
-
-        // Verify copilot is running
-        copilot.read_with(cx, |copilot, _| {
-            assert!(
-                matches!(copilot.server, CopilotServer::Running(_)),
-                "Copilot should be running initially"
-            );
-        });
-
-        // Now disable AI
-        cx.update(|cx| {
-            DisableAiSettings::override_global(DisableAiSettings { disable_ai: true }, cx);
-        });
-
-        // The settings observer should have stopped the server
-        cx.run_until_parked();
-
-        copilot.read_with(cx, |copilot, _| {
-            assert!(
-                matches!(copilot.server, CopilotServer::Disabled),
-                "Copilot should be disabled after disable_ai is set to true"
-            );
-        });
-    }
+    use util::{path, paths::PathStyle, rel_path::rel_path};
 
     #[gpui::test(iterations = 10)]
     async fn test_buffer_management(cx: &mut TestAppContext) {
-        init_test(cx);
         let (copilot, mut lsp) = Copilot::fake(cx);
 
         let buffer_1 = cx.new(|cx| Buffer::local("Hello", cx));
@@ -1680,35 +1344,25 @@ mod tests {
             .update(cx, |copilot, cx| copilot.sign_out(cx))
             .await
             .unwrap();
-        let mut received_close_notifications = vec![
-            lsp.receive_notification::<lsp::notification::DidCloseTextDocument>()
-                .await,
-            lsp.receive_notification::<lsp::notification::DidCloseTextDocument>()
-                .await,
-        ];
-        received_close_notifications
-            .sort_by_key(|notification| notification.text_document.uri.clone());
         assert_eq!(
-            received_close_notifications,
-            vec![
-                lsp::DidCloseTextDocumentParams {
-                    text_document: lsp::TextDocumentIdentifier::new(buffer_2_uri.clone()),
-                },
-                lsp::DidCloseTextDocumentParams {
-                    text_document: lsp::TextDocumentIdentifier::new(buffer_1_uri.clone()),
-                },
-            ],
+            lsp.receive_notification::<lsp::notification::DidCloseTextDocument>()
+                .await,
+            lsp::DidCloseTextDocumentParams {
+                text_document: lsp::TextDocumentIdentifier::new(buffer_1_uri.clone()),
+            }
+        );
+        assert_eq!(
+            lsp.receive_notification::<lsp::notification::DidCloseTextDocument>()
+                .await,
+            lsp::DidCloseTextDocumentParams {
+                text_document: lsp::TextDocumentIdentifier::new(buffer_2_uri.clone()),
+            }
         );
 
         // Ensure all previously-registered buffers are re-opened when signing in.
-        lsp.set_request_handler::<request::SignIn, _, _>(|_, _| async {
-            Ok(request::PromptUserDeviceFlow {
-                user_code: "test-code".into(),
-                command: lsp::Command {
-                    title: "Sign in".into(),
-                    command: "github.copilot.finishDeviceFlow".into(),
-                    arguments: None,
-                },
+        lsp.set_request_handler::<request::SignInInitiate, _, _>(|_, _| async {
+            Ok(request::SignInInitiateResult::AlreadySignedIn {
+                user: "user-1".into(),
             })
         });
         copilot
@@ -1716,44 +1370,29 @@ mod tests {
             .await
             .unwrap();
 
-        // Simulate auth completion by directly updating sign-in status
-        copilot.update(cx, |copilot, cx| {
-            copilot.update_sign_in_status(
-                request::SignInStatus::Ok {
-                    user: Some("user-1".into()),
-                },
-                cx,
-            );
-        });
-
-        let mut received_open_notifications = vec![
-            lsp.receive_notification::<lsp::notification::DidOpenTextDocument>()
-                .await,
-            lsp.receive_notification::<lsp::notification::DidOpenTextDocument>()
-                .await,
-        ];
-        received_open_notifications
-            .sort_by_key(|notification| notification.text_document.uri.clone());
         assert_eq!(
-            received_open_notifications,
-            vec![
-                lsp::DidOpenTextDocumentParams {
-                    text_document: lsp::TextDocumentItem::new(
-                        buffer_2_uri.clone(),
-                        "plaintext".into(),
-                        0,
-                        "Goodbye".into()
-                    ),
-                },
-                lsp::DidOpenTextDocumentParams {
-                    text_document: lsp::TextDocumentItem::new(
-                        buffer_1_uri.clone(),
-                        "plaintext".into(),
-                        0,
-                        "Hello world".into()
-                    ),
-                }
-            ]
+            lsp.receive_notification::<lsp::notification::DidOpenTextDocument>()
+                .await,
+            lsp::DidOpenTextDocumentParams {
+                text_document: lsp::TextDocumentItem::new(
+                    buffer_1_uri.clone(),
+                    "plaintext".into(),
+                    0,
+                    "Hello world".into()
+                ),
+            }
+        );
+        assert_eq!(
+            lsp.receive_notification::<lsp::notification::DidOpenTextDocument>()
+                .await,
+            lsp::DidOpenTextDocumentParams {
+                text_document: lsp::TextDocumentItem::new(
+                    buffer_2_uri.clone(),
+                    "plaintext".into(),
+                    0,
+                    "Goodbye".into()
+                ),
+            }
         );
         // Dropping a buffer causes it to be closed on the LSP side as well.
         cx.update(|_| drop(buffer_2));
@@ -1779,7 +1418,6 @@ mod tests {
         fn disk_state(&self) -> language::DiskState {
             language::DiskState::Present {
                 mtime: ::fs::MTime::from_seconds_and_nanos(100, 42),
-                size: 0,
             }
         }
 
@@ -1825,73 +1463,10 @@ mod tests {
             unimplemented!()
         }
     }
+}
 
-    #[gpui::test]
-    async fn test_copilot_starts_when_ai_becomes_enabled(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let store = SettingsStore::test(cx);
-            cx.set_global(store);
-            DisableAiSettings::register(cx);
-            AllLanguageSettings::register(cx);
-
-            // AI is initially disabled
-            DisableAiSettings::override_global(DisableAiSettings { disable_ai: true }, cx);
-        });
-
-        let copilot = cx.new(|cx| Copilot {
-            server_id: LanguageServerId(0),
-            fs: FakeFs::new(cx.background_executor().clone()),
-            node_runtime: NodeRuntime::unavailable(),
-            server: CopilotServer::Disabled,
-            buffers: Default::default(),
-            _subscriptions: vec![],
-        });
-
-        // Verify copilot is disabled initially
-        copilot.read_with(cx, |copilot, _| {
-            assert!(
-                matches!(copilot.server, CopilotServer::Disabled),
-                "Copilot should be disabled initially"
-            );
-        });
-
-        // Try to start - should fail because AI is disabled
-        // Use check_edit_prediction_provider=false to skip provider check
-        copilot.update(cx, |copilot, cx| {
-            copilot.start_copilot(false, false, cx);
-        });
-
-        copilot.read_with(cx, |copilot, _| {
-            assert!(
-                matches!(copilot.server, CopilotServer::Disabled),
-                "Copilot should remain disabled when disable_ai is true"
-            );
-        });
-
-        // Now enable AI
-        cx.update(|cx| {
-            DisableAiSettings::override_global(DisableAiSettings { disable_ai: false }, cx);
-        });
-
-        // Try to start again - should work now
-        copilot.update(cx, |copilot, cx| {
-            copilot.start_copilot(false, false, cx);
-        });
-
-        copilot.read_with(cx, |copilot, _| {
-            assert!(
-                matches!(copilot.server, CopilotServer::Starting { .. }),
-                "Copilot should be starting after disable_ai is set to false"
-            );
-        });
-    }
-
-    fn init_test(cx: &mut TestAppContext) {
-        zlog::init_test();
-
-        cx.update(|cx| {
-            let settings_store = SettingsStore::test(cx);
-            cx.set_global(settings_store);
-        });
-    }
+#[cfg(test)]
+#[ctor::ctor]
+fn init_logger() {
+    zlog::init_test();
 }

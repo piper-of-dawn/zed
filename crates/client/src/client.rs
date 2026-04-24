@@ -1,7 +1,6 @@
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
 
-mod llm_token;
 mod proxy;
 pub mod telemetry;
 pub mod user;
@@ -14,20 +13,17 @@ use async_tungstenite::tungstenite::{
     http::{HeaderValue, Request, StatusCode},
 };
 use clock::SystemClock;
-use cloud_api_client::LlmApiToken;
+use cloud_api_client::CloudApiClient;
 use cloud_api_client::websocket_protocol::MessageToClient;
-use cloud_api_client::{ClientApiError, CloudApiClient};
-use cloud_api_types::OrganizationId;
 use credentials_provider::CredentialsProvider;
 use feature_flags::FeatureFlagAppExt as _;
 use futures::{
     AsyncReadExt, FutureExt, SinkExt, Stream, StreamExt, TryFutureExt as _, TryStreamExt,
-    channel::{mpsc, oneshot},
-    future::BoxFuture,
+    channel::oneshot, future::BoxFuture,
 };
 use gpui::{App, AsyncApp, Entity, Global, Task, WeakEntity, actions};
 use http_client::{HttpClient, HttpClientWithUrl, http, read_proxy_from_env};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use postage::watch;
 use proxy::connect_proxy_stream;
 use rand::prelude::*;
@@ -38,6 +34,7 @@ use settings::{RegisterSetting, Settings, SettingsContent};
 use std::{
     any::TypeId,
     convert::TryFrom,
+    fmt::Write as _,
     future::Future,
     marker::PhantomData,
     path::PathBuf,
@@ -54,7 +51,6 @@ use tokio::net::TcpStream;
 use url::Url;
 use util::{ConnectionResult, ResultExt};
 
-pub use llm_token::*;
 pub use rpc::*;
 pub use telemetry_events::Event;
 pub use user::*;
@@ -125,9 +121,7 @@ pub struct ProxySettings {
 impl ProxySettings {
     pub fn proxy_url(&self) -> Option<Url> {
         self.proxy
-            .as_deref()
-            .map(str::trim)
-            .filter(|input| !input.is_empty())
+            .as_ref()
             .and_then(|input| {
                 input
                     .parse::<Url>()
@@ -141,12 +135,7 @@ impl ProxySettings {
 impl Settings for ProxySettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
         Self {
-            proxy: content
-                .proxy
-                .as_deref()
-                .map(str::trim)
-                .filter(|proxy| !proxy.is_empty())
-                .map(ToOwned::to_owned),
+            proxy: content.proxy.clone(),
         }
     }
 }
@@ -161,8 +150,9 @@ pub fn init(client: &Arc<Client>, cx: &mut App) {
                     .detach_and_log_err(cx);
             }
         }
-    })
-    .on_action({
+    });
+
+    cx.on_action({
         let client = client.clone();
         move |_: &SignOut, cx| {
             if let Some(client) = client.upgrade() {
@@ -172,8 +162,9 @@ pub fn init(client: &Arc<Client>, cx: &mut App) {
                 .detach();
             }
         }
-    })
-    .on_action({
+    });
+
+    cx.on_action({
         let client = client;
         move |_: &Reconnect, cx| {
             if let Some(client) = client.upgrade() {
@@ -200,9 +191,8 @@ pub struct Client {
     telemetry: Arc<Telemetry>,
     credentials_provider: ClientCredentialsProvider,
     state: RwLock<ClientState>,
-    handler_set: Mutex<ProtoMessageHandlerSet>,
-    message_to_client_handlers: Mutex<Vec<MessageToClientHandler>>,
-    sign_out_tx: Mutex<Option<mpsc::UnboundedSender<()>>>,
+    handler_set: parking_lot::Mutex<ProtoMessageHandlerSet>,
+    message_to_client_handlers: parking_lot::Mutex<Vec<MessageToClientHandler>>,
 
     #[allow(clippy::type_complexity)]
     #[cfg(any(test, feature = "test-support"))]
@@ -343,12 +333,12 @@ pub struct ClientCredentialsProvider {
 impl ClientCredentialsProvider {
     pub fn new(cx: &App) -> Self {
         Self {
-            provider: zed_credentials_provider::global(cx),
+            provider: <dyn CredentialsProvider>::global(cx),
         }
     }
 
     fn server_url(&self, cx: &AsyncApp) -> Result<String> {
-        Ok(cx.update(|cx| ClientSettings::get_global(cx).server_url.clone()))
+        cx.update(|cx| ClientSettings::get_global(cx).server_url.clone())
     }
 
     /// Reads the credentials from the provider.
@@ -542,8 +532,7 @@ impl Client {
             credentials_provider: ClientCredentialsProvider::new(cx),
             state: Default::default(),
             handler_set: Default::default(),
-            message_to_client_handlers: Mutex::new(Vec::new()),
-            sign_out_tx: Mutex::new(None),
+            message_to_client_handlers: parking_lot::Mutex::new(Vec::new()),
 
             #[cfg(any(test, feature = "test-support"))]
             authenticate: Default::default(),
@@ -570,10 +559,6 @@ impl Client {
 
     pub fn http_client(&self) -> Arc<HttpClientWithUrl> {
         self.http.clone()
-    }
-
-    pub fn credentials_provider(&self) -> Arc<dyn CredentialsProvider> {
-        self.credentials_provider.provider.clone()
     }
 
     pub fn cloud_client(&self) -> Arc<CloudApiClient> {
@@ -944,10 +929,10 @@ impl Client {
         let connect_task = cx.update({
             let cloud_client = self.cloud_client.clone();
             move |cx| cloud_client.connect(cx)
-        })?;
+        })??;
         let connection = connect_task.await?;
 
-        let (mut messages, task) = cx.update(|cx| connection.spawn(cx));
+        let (mut messages, task) = cx.update(|cx| connection.spawn(cx))?;
         task.detach();
 
         cx.spawn({
@@ -987,7 +972,8 @@ impl Client {
                 }
             })
             .detach();
-        });
+        })
+        .log_err();
 
         let credentials = self.sign_in(try_provider, cx).await?;
 
@@ -1012,7 +998,8 @@ impl Client {
                 }
             })
             .detach_and_log_err(cx);
-        });
+        })
+        .log_err();
 
         Ok(())
     }
@@ -1257,8 +1244,14 @@ impl Client {
         credentials: &Credentials,
         cx: &AsyncApp,
     ) -> Task<Result<Connection, EstablishConnectionError>> {
-        let release_channel = cx.update(|cx| ReleaseChannel::try_global(cx));
-        let app_version = cx.update(|cx| AppVersion::global(cx).to_string());
+        let release_channel = cx
+            .update(|cx| ReleaseChannel::try_global(cx))
+            .ok()
+            .flatten();
+        let app_version = cx
+            .update(|cx| AppVersion::global(cx).to_string())
+            .ok()
+            .unwrap_or_default();
 
         let http = self.http.clone();
         let proxy = http.proxy().cloned();
@@ -1295,7 +1288,7 @@ impl Client {
                         None => Box::new(TcpStream::connect(rpc_host).await?),
                     })
                 }
-            })
+            })?
             .await?;
 
             log::info!("connected to rpc endpoint {}", rpc_url);
@@ -1363,12 +1356,12 @@ impl Client {
             let (open_url_tx, open_url_rx) = oneshot::channel::<String>();
             cx.update(|cx| {
                 cx.spawn(async move |cx| {
-                    if let Ok(url) = open_url_rx.await {
-                        cx.update(|cx| cx.open_url(&url));
-                    }
+                    let url = open_url_rx.await?;
+                    cx.update(|cx| cx.open_url(&url))
                 })
-                .detach();
-            });
+                .detach_and_log_err(cx);
+            })
+            .log_err();
 
             let credentials = background
                 .clone()
@@ -1377,9 +1370,9 @@ impl Client {
                     // zed server to encrypt the user's access token, so that it can'be intercepted by
                     // any other app running on the user's device.
                     let (public_key, private_key) =
-                        rpc::auth::keypair().context("failed to generate keypair for auth")?;
+                        rpc::auth::keypair().expect("failed to generate keypair for auth");
                     let public_key_string = String::try_from(public_key)
-                        .context("failed to serialize public key for auth")?;
+                        .expect("failed to serialize public key for auth");
 
                     if let Some((login, token)) =
                         IMPERSONATE_LOGIN.as_ref().zip(ADMIN_API_TOKEN.as_ref())
@@ -1394,20 +1387,21 @@ impl Client {
                     }
 
                     // Start an HTTP server to receive the redirect from Zed's sign-in page.
-                    let server = tiny_http::Server::http("127.0.0.1:0")
-                        .map_err(|e| anyhow!(e).context("failed to bind callback port"))?;
-                    let port = server
-                        .server_addr()
-                        .to_ip()
-                        .context("server not bound to a TCP address")?
-                        .port();
+                    let server =
+                        tiny_http::Server::http("127.0.0.1:0").expect("failed to find open port");
+                    let port = server.server_addr().port();
 
                     // Open the Zed sign-in page in the user's browser, with query parameters that indicate
                     // that the user is signing in from a Zed app running on the same device.
-                    let url = http.build_url(&format!(
+                    let mut url = http.build_url(&format!(
                         "/native_app_signin?native_app_port={}&native_app_public_key={}",
                         port, public_key_string
                     ));
+
+                    if let Some(impersonate_login) = IMPERSONATE_LOGIN.as_ref() {
+                        log::info!("impersonating user @{}", impersonate_login);
+                        write!(&mut url, "&impersonate={}", impersonate_login).unwrap();
+                    }
 
                     open_url_tx.send(url).log_err();
 
@@ -1469,7 +1463,7 @@ impl Client {
                 })
                 .await?;
 
-            cx.update(|cx| cx.activate(true));
+            cx.update(|cx| cx.activate(true))?;
             Ok(credentials)
         })
     }
@@ -1521,66 +1515,6 @@ impl Client {
         })
     }
 
-    pub async fn acquire_llm_token(
-        &self,
-        llm_token: &LlmApiToken,
-        organization_id: Option<OrganizationId>,
-    ) -> Result<String> {
-        let system_id = self.telemetry().system_id().map(|x| x.to_string());
-        let cloud_client = self.cloud_client();
-        match llm_token
-            .acquire(&cloud_client, system_id, organization_id)
-            .await
-        {
-            Ok(token) => Ok(token),
-            Err(ClientApiError::Unauthorized) => {
-                self.request_sign_out();
-                Err(ClientApiError::Unauthorized).context("Failed to create LLM token")
-            }
-            Err(err) => Err(anyhow::Error::from(err)),
-        }
-    }
-
-    pub async fn refresh_llm_token(
-        &self,
-        llm_token: &LlmApiToken,
-        organization_id: Option<OrganizationId>,
-    ) -> Result<String> {
-        let system_id = self.telemetry().system_id().map(|x| x.to_string());
-        let cloud_client = self.cloud_client();
-        match llm_token
-            .refresh(&cloud_client, system_id, organization_id)
-            .await
-        {
-            Ok(token) => Ok(token),
-            Err(ClientApiError::Unauthorized) => {
-                self.request_sign_out();
-                return Err(ClientApiError::Unauthorized).context("Failed to create LLM token");
-            }
-            Err(err) => return Err(anyhow::Error::from(err)),
-        }
-    }
-
-    pub async fn clear_and_refresh_llm_token(
-        &self,
-        llm_token: &LlmApiToken,
-        organization_id: Option<OrganizationId>,
-    ) -> Result<String> {
-        let system_id = self.telemetry().system_id().map(|x| x.to_string());
-        let cloud_client = self.cloud_client();
-        match llm_token
-            .clear_and_refresh(&cloud_client, system_id, organization_id)
-            .await
-        {
-            Ok(token) => Ok(token),
-            Err(ClientApiError::Unauthorized) => {
-                self.request_sign_out();
-                return Err(ClientApiError::Unauthorized).context("Failed to create LLM token");
-            }
-            Err(err) => return Err(anyhow::Error::from(err)),
-        }
-    }
-
     pub async fn sign_out(self: &Arc<Self>, cx: &AsyncApp) {
         self.state.write().credentials = None;
         self.cloud_client.clear_credentials();
@@ -1591,13 +1525,6 @@ impl Client {
                 .delete_credentials(cx)
                 .await
                 .log_err();
-        }
-    }
-
-    /// Requests a sign out to be performed asynchronously.
-    pub fn request_sign_out(&self) {
-        if let Some(sign_out_tx) = self.sign_out_tx.lock().clone() {
-            sign_out_tx.unbounded_send(()).ok();
         }
     }
 
@@ -1755,7 +1682,8 @@ impl Client {
             for handler in self.message_to_client_handlers.lock().iter() {
                 handler(&message, cx);
             }
-        });
+        })
+        .ok();
     }
 
     pub fn telemetry(&self) -> &Arc<Telemetry> {
@@ -1788,75 +1716,35 @@ impl ProtoClient for Client {
         self.peer.send_dynamic(connection_id, envelope)
     }
 
-    fn message_handler_set(&self) -> &Mutex<ProtoMessageHandlerSet> {
+    fn message_handler_set(&self) -> &parking_lot::Mutex<ProtoMessageHandlerSet> {
         &self.handler_set
     }
 
     fn is_via_collab(&self) -> bool {
         true
     }
-
-    fn has_wsl_interop(&self) -> bool {
-        false
-    }
 }
 
 /// prefix for the zed:// url scheme
 pub const ZED_URL_SCHEME: &str = "zed";
 
-/// A parsed Zed link that can be handled internally by the application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ZedLink {
-    /// Join a channel: `zed.dev/channel/channel-name-123` or `zed://channel/channel-name-123`
-    Channel { channel_id: u64 },
-    /// Open channel notes: `zed.dev/channel/channel-name-123/notes` or with heading `notes#heading`
-    ChannelNotes {
-        channel_id: u64,
-        heading: Option<String>,
-    },
-}
-
 /// Parses the given link into a Zed link.
 ///
-/// Returns a [`Some`] containing the parsed link if the link is a recognized Zed link
-/// that should be handled internally by the application.
-/// Returns [`None`] for links that should be opened in the browser.
-pub fn parse_zed_link(link: &str, cx: &App) -> Option<ZedLink> {
+/// Returns a [`Some`] containing the unprefixed link if the link is a Zed link.
+/// Returns [`None`] otherwise.
+pub fn parse_zed_link<'a>(link: &'a str, cx: &App) -> Option<&'a str> {
     let server_url = &ClientSettings::get_global(cx).server_url;
-    let path = link
+    if let Some(stripped) = link
         .strip_prefix(server_url)
         .and_then(|result| result.strip_prefix('/'))
-        .or_else(|| {
-            link.strip_prefix(ZED_URL_SCHEME)
-                .and_then(|result| result.strip_prefix("://"))
-        })?;
-
-    let mut parts = path.split('/');
-
-    if parts.next() != Some("channel") {
-        return None;
+    {
+        return Some(stripped);
     }
-
-    let slug = parts.next()?;
-    let id_str = slug.split('-').next_back()?;
-    let channel_id = id_str.parse::<u64>().ok()?;
-
-    let Some(next) = parts.next() else {
-        return Some(ZedLink::Channel { channel_id });
-    };
-
-    if let Some(heading) = next.strip_prefix("notes#") {
-        return Some(ZedLink::ChannelNotes {
-            channel_id,
-            heading: Some(heading.to_string()),
-        });
-    }
-
-    if next == "notes" {
-        return Some(ZedLink::ChannelNotes {
-            channel_id,
-            heading: None,
-        });
+    if let Some(stripped) = link
+        .strip_prefix(ZED_URL_SCHEME)
+        .and_then(|result| result.strip_prefix("://"))
+    {
+        return Some(stripped);
     }
 
     None
@@ -1874,19 +1762,6 @@ mod tests {
     use proto::TypedEnvelope;
     use settings::SettingsStore;
     use std::future;
-
-    #[test]
-    fn test_proxy_settings_trims_and_ignores_empty_proxy() {
-        let mut content = SettingsContent::default();
-        content.proxy = Some("   ".to_owned());
-        assert_eq!(ProxySettings::from_settings(&content).proxy, None);
-
-        content.proxy = Some("http://127.0.0.1:10809".to_owned());
-        assert_eq!(
-            ProxySettings::from_settings(&content).proxy.as_deref(),
-            Some("http://127.0.0.1:10809")
-        );
-    }
 
     #[gpui::test(iterations = 10)]
     async fn test_reconnection(cx: &mut TestAppContext) {
@@ -2168,7 +2043,7 @@ mod tests {
         let (done_tx2, done_rx2) = smol::channel::unbounded();
         AnyProtoClient::from(client.clone()).add_entity_message_handler(
             move |entity: Entity<TestEntity>, _: TypedEnvelope<proto::JoinProject>, cx| {
-                match entity.read_with(&cx, |entity, _| entity.id) {
+                match entity.read_with(&cx, |entity, _| entity.id).unwrap() {
                     1 => done_tx1.try_send(()).unwrap(),
                     2 => done_tx2.try_send(()).unwrap(),
                     _ => unreachable!(),
@@ -2209,13 +2084,11 @@ mod tests {
             project_id: 1,
             committer_name: None,
             committer_email: None,
-            features: Vec::new(),
         });
         server.send(proto::JoinProject {
             project_id: 2,
             committer_name: None,
             committer_email: None,
-            features: Vec::new(),
         });
         done_rx1.recv().await.unwrap();
         done_rx2.recv().await.unwrap();

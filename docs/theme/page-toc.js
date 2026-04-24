@@ -3,17 +3,20 @@ let scrollTimeout;
 const listenActive = () => {
   const elems = document.querySelector(".pagetoc").children;
   [...elems].forEach((el) => {
-    el.addEventListener("click", (_) => {
+    el.addEventListener("click", (event) => {
       clearTimeout(scrollTimeout);
       [...elems].forEach((el) => el.classList.remove("active"));
       el.classList.add("active");
-
+      // Prevent scroll updates for a short period
       scrollTimeout = setTimeout(() => {
         scrollTimeout = null;
-      }, 100);
+      }, 100); // Adjust timing as needed
     });
   });
 };
+
+const getPagetoc = () =>
+  document.querySelector(".pagetoc") || autoCreatePagetoc();
 
 const autoCreatePagetoc = () => {
   const main = document.querySelector("#content > main");
@@ -24,72 +27,50 @@ const autoCreatePagetoc = () => {
   main.prepend(content);
   main.insertAdjacentHTML(
     "afterbegin",
-    '<div class="toc-container"><nav class="pagetoc"></nav></div>',
+    '<div class="sidetoc"><nav class="pagetoc"></nav></div>',
   );
   return document.querySelector(".pagetoc");
 };
-
-const getPagetoc = () =>
-  document.querySelector(".pagetoc") || autoCreatePagetoc();
-
 const updateFunction = () => {
-  if (scrollTimeout) return;
-
+  if (scrollTimeout) return; // Skip updates if within the cooldown period from a click
   const headers = [...document.getElementsByClassName("header")];
-  if (headers.length === 0) return;
+  const scrolledY = window.scrollY;
+  let lastHeader = null;
 
-  const threshold = 100;
-  let activeHeader = null;
-
-  for (const header of headers) {
-    const rect = header.getBoundingClientRect();
-
-    if (rect.top <= threshold) {
-      activeHeader = header;
+  // Find the last header that is above the current scroll position
+  for (let i = headers.length - 1; i >= 0; i--) {
+    if (scrolledY >= headers[i].offsetTop) {
+      lastHeader = headers[i];
+      break;
     }
-  }
-
-  if (!activeHeader && headers.length > 0) {
-    activeHeader = headers[0];
   }
 
   const pagetocLinks = [...document.querySelector(".pagetoc").children];
   pagetocLinks.forEach((link) => link.classList.remove("active"));
 
-  if (activeHeader) {
+  if (lastHeader) {
     const activeLink = pagetocLinks.find(
-      (link) => activeHeader.href === link.href,
+      (link) => lastHeader.href === link.href,
     );
     if (activeLink) activeLink.classList.add("active");
   }
 };
 
-document.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("load", () => {
   const pagetoc = getPagetoc();
   const headers = [...document.getElementsByClassName("header")];
 
   const nonH1Headers = headers.filter(
     (header) => !header.parentElement.tagName.toLowerCase().startsWith("h1"),
   );
-  const tocContainer = document.querySelector(".toc-container");
+  const sidetoc = document.querySelector(".sidetoc");
 
   if (nonH1Headers.length === 0) {
-    if (tocContainer) {
-      tocContainer.classList.add("no-toc");
+    if (sidetoc) {
+      sidetoc.style.display = "none";
     }
     return;
   }
-
-  if (tocContainer) {
-    tocContainer.classList.add("has-toc");
-  }
-
-  const tocTitle = Object.assign(document.createElement("p"), {
-    className: "toc-title",
-    textContent: "On This Page",
-  });
-
-  pagetoc.appendChild(tocTitle);
 
   headers.forEach((header) => {
     const link = Object.assign(document.createElement("a"), {
@@ -99,14 +80,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     pagetoc.appendChild(link);
   });
-
   updateFunction();
   listenActive();
-
-  const pageElement = document.querySelector(".page");
-  if (pageElement) {
-    pageElement.addEventListener("scroll", updateFunction);
-  } else {
-    window.addEventListener("scroll", updateFunction);
-  }
+  window.addEventListener("scroll", updateFunction);
 });

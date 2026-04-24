@@ -1,15 +1,16 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use gpui::AsyncApp;
 use language::{
     LspAdapter, LspAdapterDelegate, LspInstaller, Toolchain, language_settings::AllLanguageSettings,
 };
-use lsp::{LanguageServerBinary, LanguageServerName, Uri};
+use lsp::{LanguageServerBinary, LanguageServerName};
 use node_runtime::{NodeRuntime, VersionStrategy};
 use project::lsp_store::language_server_settings;
-use semver::Version;
 use serde_json::Value;
 use settings::{Settings, SettingsLocation};
+use smol::fs;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -36,14 +37,14 @@ impl YamlLspAdapter {
 }
 
 impl LspInstaller for YamlLspAdapter {
-    type BinaryVersion = Version;
+    type BinaryVersion = String;
 
     async fn fetch_latest_server_version(
         &self,
         _: &dyn LspAdapterDelegate,
         _: bool,
         _: &mut AsyncApp,
-    ) -> Result<Self::BinaryVersion> {
+    ) -> Result<String> {
         self.node
             .npm_package_latest_version("yaml-language-server")
             .await
@@ -67,7 +68,7 @@ impl LspInstaller for YamlLspAdapter {
 
     async fn fetch_server_binary(
         &self,
-        latest_version: Self::BinaryVersion,
+        latest_version: String,
         container_dir: PathBuf,
         _: &dyn LspAdapterDelegate,
     ) -> Result<LanguageServerBinary> {
@@ -76,7 +77,7 @@ impl LspInstaller for YamlLspAdapter {
         self.node
             .npm_install_packages(
                 &container_dir,
-                &[(Self::PACKAGE_NAME, &latest_version.to_string())],
+                &[(Self::PACKAGE_NAME, latest_version.as_str())],
             )
             .await?;
 
@@ -89,7 +90,7 @@ impl LspInstaller for YamlLspAdapter {
 
     async fn check_if_version_installed(
         &self,
-        version: &Self::BinaryVersion,
+        version: &String,
         container_dir: &PathBuf,
         _: &dyn LspAdapterDelegate,
     ) -> Option<LanguageServerBinary> {
@@ -133,9 +134,9 @@ impl LspAdapter for YamlLspAdapter {
 
     async fn workspace_configuration(
         self: Arc<Self>,
+
         delegate: &Arc<dyn LspAdapterDelegate>,
         _: Option<Toolchain>,
-        _: Option<Uri>,
         cx: &mut AsyncApp,
     ) -> Result<Value> {
         let location = SettingsLocation {
@@ -147,7 +148,7 @@ impl LspAdapter for YamlLspAdapter {
             AllLanguageSettings::get(Some(location), cx)
                 .language(Some(location), Some(&"YAML".into()), cx)
                 .tab_size
-        });
+        })?;
 
         let mut options = serde_json::json!({
             "[yaml]": {"editor.tabSize": tab_size},
@@ -156,8 +157,8 @@ impl LspAdapter for YamlLspAdapter {
 
         let project_options = cx.update(|cx| {
             language_server_settings(delegate.as_ref(), &Self::SERVER_NAME, cx)
-                .and_then(|s| worktree_root(delegate, s.settings.clone()))
-        });
+                .and_then(|s| s.settings.clone())
+        })?;
         if let Some(override_options) = project_options {
             merge_json_value_into(override_options, &mut options);
         }
@@ -165,47 +166,24 @@ impl LspAdapter for YamlLspAdapter {
     }
 }
 
-fn worktree_root(delegate: &Arc<dyn LspAdapterDelegate>, settings: Option<Value>) -> Option<Value> {
-    let Some(Value::Object(mut settings_map)) = settings else {
-        return settings;
-    };
-
-    let Some(Value::Object(yaml_config)) = settings_map.get_mut("yaml") else {
-        return Some(Value::Object(settings_map));
-    };
-
-    let Some(Value::Object(schemas)) = yaml_config.remove("schemas") else {
-        return Some(Value::Object(settings_map));
-    };
-
-    let schemas = schemas
-        .into_iter()
-        .map(|(url, v)| {
-            if !url.starts_with(".") && !url.starts_with("~") {
-                (url, v)
-            } else {
-                let resolved_url = delegate
-                    .resolve_relative_path(url.into())
-                    .to_string_lossy()
-                    .into_owned();
-                (resolved_url, v)
-            }
-        })
-        .collect::<serde_json::Map<String, Value>>();
-
-    yaml_config.insert("schemas".into(), Value::Object(schemas));
-    Some(Value::Object(settings_map))
-}
-
 async fn get_cached_server_binary(
     container_dir: PathBuf,
     node: &NodeRuntime,
 ) -> Option<LanguageServerBinary> {
     maybe!(async {
-        let server_path = container_dir.join(SERVER_PATH);
+        let mut last_version_dir = None;
+        let mut entries = fs::read_dir(&container_dir).await?;
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            if entry.file_type().await?.is_dir() {
+                last_version_dir = Some(entry.path());
+            }
+        }
+        let last_version_dir = last_version_dir.context("no cached binary")?;
+        let server_path = last_version_dir.join(SERVER_PATH);
         anyhow::ensure!(
             server_path.exists(),
-            "missing executable in directory {server_path:?}"
+            "missing executable in directory {last_version_dir:?}"
         );
         Ok(LanguageServerBinary {
             path: node.binary_path().await?,

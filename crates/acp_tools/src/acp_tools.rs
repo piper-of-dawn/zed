@@ -4,20 +4,22 @@ use std::{
     fmt::Display,
     rc::{Rc, Weak},
     sync::Arc,
+    time::Duration,
 };
 
 use agent_client_protocol as acp;
 use collections::HashMap;
 use gpui::{
-    App, Empty, Entity, EventEmitter, FocusHandle, Focusable, Global, ListAlignment, ListState,
-    StyleRefinement, Subscription, Task, TextStyleRefinement, Window, actions, list, prelude::*,
+    App, ClipboardItem, Empty, Entity, EventEmitter, FocusHandle, Focusable, Global, ListAlignment,
+    ListState, StyleRefinement, Subscription, Task, TextStyleRefinement, Window, actions, list,
+    prelude::*,
 };
 use language::LanguageRegistry;
-use markdown::{CodeBlockRenderer, CopyButtonVisibility, Markdown, MarkdownElement, MarkdownStyle};
-use project::{AgentId, Project};
+use markdown::{CodeBlockRenderer, Markdown, MarkdownElement, MarkdownStyle};
+use project::Project;
 use settings::Settings;
-use theme_settings::ThemeSettings;
-use ui::{CopyButton, Tooltip, WithScrollbar, prelude::*};
+use theme::ThemeSettings;
+use ui::{Tooltip, WithScrollbar, prelude::*};
 use util::ResultExt as _;
 use workspace::{
     Item, ItemHandle, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
@@ -48,7 +50,7 @@ pub struct AcpConnectionRegistry {
 }
 
 struct ActiveConnection {
-    agent_id: AgentId,
+    server_name: SharedString,
     connection: Weak<acp::ClientSideConnection>,
 }
 
@@ -65,12 +67,12 @@ impl AcpConnectionRegistry {
 
     pub fn set_active_connection(
         &self,
-        agent_id: AgentId,
+        server_name: impl Into<SharedString>,
         connection: &Rc<acp::ClientSideConnection>,
         cx: &mut Context<Self>,
     ) {
         self.active_connection.replace(Some(ActiveConnection {
-            agent_id,
+            server_name: server_name.into(),
             connection: Rc::downgrade(connection),
         }));
         cx.notify();
@@ -87,7 +89,7 @@ struct AcpTools {
 }
 
 struct WatchedConnection {
-    agent_id: AgentId,
+    server_name: SharedString,
     messages: Vec<WatchedConnectionMessage>,
     list_state: ListState,
     connection: Weak<acp::ClientSideConnection>,
@@ -144,7 +146,7 @@ impl AcpTools {
             });
 
             self.watched_connection = Some(WatchedConnection {
-                agent_id: active_connection.agent_id.clone(),
+                server_name: active_connection.server_name.clone(),
                 messages: vec![],
                 list_state: ListState::new(0, ListAlignment::Bottom, px(2048.)),
                 connection: active_connection.connection.clone(),
@@ -291,6 +293,7 @@ impl AcpTools {
         v_flex()
             .id(index)
             .group("message")
+            .cursor_pointer()
             .font_buffer(cx)
             .w_full()
             .py_3()
@@ -302,29 +305,27 @@ impl AcpTools {
             .border_color(colors.border)
             .border_b_1()
             .hover(|this| this.bg(colors.element_background.opacity(0.5)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.expanded.contains(&index) {
+                    this.expanded.remove(&index);
+                } else {
+                    this.expanded.insert(index);
+                    let Some(connection) = &mut this.watched_connection else {
+                        return;
+                    };
+                    let Some(message) = connection.messages.get_mut(index) else {
+                        return;
+                    };
+                    message.expanded(this.project.read(cx).languages().clone(), cx);
+                    connection.list_state.scroll_to_reveal_item(index);
+                }
+                cx.notify()
+            }))
             .child(
                 h_flex()
-                    .id(("acp-log-message-header", index))
                     .w_full()
                     .gap_2()
                     .flex_shrink_0()
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if this.expanded.contains(&index) {
-                            this.expanded.remove(&index);
-                        } else {
-                            this.expanded.insert(index);
-                            let Some(connection) = &mut this.watched_connection else {
-                                return;
-                            };
-                            let Some(message) = connection.messages.get_mut(index) else {
-                                return;
-                            };
-                            message.expanded(this.project.read(cx).languages().clone(), cx);
-                            connection.list_state.scroll_to_reveal_item(index);
-                        }
-                        cx.notify()
-                    }))
                     .child(match message.direction {
                         acp::StreamMessageDirection::Incoming => Icon::new(IconName::ArrowDown)
                             .color(Color::Error)
@@ -370,13 +371,13 @@ impl AcpTools {
                                     syntax: cx.theme().syntax().clone(),
                                     code_block_overflow_x_scroll: true,
                                     code_block: StyleRefinement {
-                                        text: TextStyleRefinement {
+                                        text: Some(TextStyleRefinement {
                                             font_family: Some(
                                                 theme_settings.buffer_font.family.clone(),
                                             ),
                                             font_size: Some((base_size * 0.8).into()),
                                             ..Default::default()
-                                        },
+                                        }),
                                         ..Default::default()
                                     },
                                     ..Default::default()
@@ -384,11 +385,8 @@ impl AcpTools {
                             )
                             .code_block_renderer(
                                 CodeBlockRenderer::Default {
-                                    copy_button_visibility: if expanded {
-                                        CopyButtonVisibility::VisibleOnHover
-                                    } else {
-                                        CopyButtonVisibility::Hidden
-                                    },
+                                    copy_button: false,
+                                    copy_button_on_hover: expanded,
                                     border: false,
                                 },
                             ),
@@ -487,7 +485,7 @@ impl Item for AcpTools {
             "ACP: {}",
             self.watched_connection
                 .as_ref()
-                .map_or("Disconnected", |connection| connection.agent_id.0.as_ref())
+                .map_or("Disconnected", |connection| &connection.server_name)
         )
         .into()
     }
@@ -530,7 +528,7 @@ impl Render for AcpTools {
                                 .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
                                 .size_full(),
                             )
-                            .vertical_scrollbar_for(&connection.list_state, window, cx)
+                            .vertical_scrollbar_for(connection.list_state.clone(), window, cx)
                             .into_any()
                     }
                 }
@@ -546,11 +544,15 @@ impl Render for AcpTools {
 
 pub struct AcpToolsToolbarItemView {
     acp_tools: Option<Entity<AcpTools>>,
+    just_copied: bool,
 }
 
 impl AcpToolsToolbarItemView {
     pub fn new() -> Self {
-        Self { acp_tools: None }
+        Self {
+            acp_tools: None,
+            just_copied: false,
+        }
     }
 }
 
@@ -570,14 +572,37 @@ impl Render for AcpToolsToolbarItemView {
         h_flex()
             .gap_2()
             .child({
-                let message = acp_tools
-                    .read(cx)
-                    .serialize_observed_messages()
-                    .unwrap_or_default();
+                let acp_tools = acp_tools.clone();
+                IconButton::new(
+                    "copy_all_messages",
+                    if self.just_copied {
+                        IconName::Check
+                    } else {
+                        IconName::Copy
+                    },
+                )
+                .icon_size(IconSize::Small)
+                .tooltip(Tooltip::text(if self.just_copied {
+                    "Copied!"
+                } else {
+                    "Copy All Messages"
+                }))
+                .disabled(!has_messages)
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    if let Some(content) = acp_tools.read(cx).serialize_observed_messages() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(content));
 
-                CopyButton::new("copy-all-messages", message)
-                    .tooltip_label("Copy All Messages")
-                    .disabled(!has_messages)
+                        this.just_copied = true;
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(Duration::from_secs(2)).await;
+                            this.update(cx, |this, cx| {
+                                this.just_copied = false;
+                                cx.notify();
+                            })
+                        })
+                        .detach();
+                    }
+                }))
             })
             .child(
                 IconButton::new("clear_messages", IconName::Trash)

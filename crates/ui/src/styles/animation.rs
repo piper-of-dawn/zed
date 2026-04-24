@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{ContentGroup, prelude::*};
 use gpui::{AnimationElement, AnimationExt, Styled};
 use std::time::Duration;
 
@@ -111,21 +111,10 @@ impl Component for Animation {
         Some("Demonstrates various animation patterns and transitions available in the UI system.")
     }
 
-    fn preview(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn preview(_window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
         let container_size = 128.0;
         let element_size = 32.0;
         let offset = container_size / 2.0 - element_size / 2.0;
-
-        let container = || {
-            h_flex()
-                .relative()
-                .justify_center()
-                .bg(cx.theme().colors().text.opacity(0.05))
-                .border_1()
-                .border_color(cx.theme().colors().border)
-                .rounded_sm()
-        };
-
         Some(
             v_flex()
                 .gap_6()
@@ -135,7 +124,10 @@ impl Component for Animation {
                         vec![
                             single_example(
                                 "From Bottom",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()
@@ -151,7 +143,10 @@ impl Component for Animation {
                             ),
                             single_example(
                                 "From Top",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()
@@ -167,7 +162,10 @@ impl Component for Animation {
                             ),
                             single_example(
                                 "From Left",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()
@@ -183,7 +181,10 @@ impl Component for Animation {
                             ),
                             single_example(
                                 "From Right",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()
@@ -205,7 +206,10 @@ impl Component for Animation {
                         vec![
                             single_example(
                                 "From Bottom",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()
@@ -221,7 +225,10 @@ impl Component for Animation {
                             ),
                             single_example(
                                 "From Top",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()
@@ -237,7 +244,10 @@ impl Component for Animation {
                             ),
                             single_example(
                                 "From Left",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()
@@ -253,7 +263,10 @@ impl Component for Animation {
                             ),
                             single_example(
                                 "From Right",
-                                container()
+                                ContentGroup::new()
+                                    .relative()
+                                    .items_center()
+                                    .justify_center()
                                     .size(px(container_size))
                                     .child(
                                         div()

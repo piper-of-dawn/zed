@@ -3,39 +3,15 @@ use std::sync::Arc;
 use anyhow::Result;
 use collections::HashSet;
 use fs::Fs;
-use gpui::{
-    DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Render, ScrollHandle, Task,
-};
+use gpui::{DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Render, Task};
 use language_model::LanguageModelRegistry;
 use language_models::provider::open_ai_compatible::{AvailableModel, ModelCapabilities};
 use settings::{OpenAiCompatibleSettingsContent, update_settings_file};
 use ui::{
-    Banner, Checkbox, KeyBinding, Modal, ModalFooter, ModalHeader, Section, ToggleState,
-    WithScrollbar, prelude::*,
+    Banner, Checkbox, KeyBinding, Modal, ModalFooter, ModalHeader, Section, ToggleState, prelude::*,
 };
 use ui_input::InputField;
 use workspace::{ModalView, Workspace};
-
-fn single_line_input(
-    label: impl Into<SharedString>,
-    placeholder: &str,
-    text: Option<&str>,
-    tab_index: isize,
-    window: &mut Window,
-    cx: &mut App,
-) -> Entity<InputField> {
-    cx.new(|cx| {
-        let input = InputField::new(window, cx, placeholder)
-            .label(label)
-            .tab_index(tab_index)
-            .tab_stop(true);
-
-        if let Some(text) = text {
-            input.set_text(text, window, cx);
-        }
-        input
-    })
-}
 
 #[derive(Clone, Copy)]
 pub enum LlmCompatibleProvider {
@@ -65,32 +41,26 @@ struct AddLlmProviderInput {
 
 impl AddLlmProviderInput {
     fn new(provider: LlmCompatibleProvider, window: &mut Window, cx: &mut App) -> Self {
-        let provider_name =
-            single_line_input("Provider Name", provider.name(), None, 1, window, cx);
-        let api_url = single_line_input("API URL", provider.api_url(), None, 2, window, cx);
-        let api_key = cx.new(|cx| {
-            InputField::new(
-                window,
-                cx,
-                "000000000000000000000000000000000000000000000000",
-            )
-            .label("API Key")
-            .tab_index(3)
-            .tab_stop(true)
-            .masked(true)
-        });
+        let provider_name = single_line_input("Provider Name", provider.name(), None, window, cx);
+        let api_url = single_line_input("API URL", provider.api_url(), None, window, cx);
+        let api_key = single_line_input(
+            "API Key",
+            "000000000000000000000000000000000000000000000000",
+            None,
+            window,
+            cx,
+        );
 
         Self {
             provider_name,
             api_url,
             api_key,
-            models: vec![ModelInput::new(0, window, cx)],
+            models: vec![ModelInput::new(window, cx)],
         }
     }
 
     fn add_model(&mut self, window: &mut Window, cx: &mut App) {
-        let model_index = self.models.len();
-        self.models.push(ModelInput::new(model_index, window, cx));
+        self.models.push(ModelInput::new(window, cx));
     }
 
     fn remove_model(&mut self, index: usize) {
@@ -103,7 +73,6 @@ struct ModelCapabilityToggles {
     pub supports_images: ToggleState,
     pub supports_parallel_tool_calls: ToggleState,
     pub supports_prompt_cache_key: ToggleState,
-    pub supports_chat_completions: ToggleState,
 }
 
 struct ModelInput {
@@ -115,14 +84,11 @@ struct ModelInput {
 }
 
 impl ModelInput {
-    fn new(model_index: usize, window: &mut Window, cx: &mut App) -> Self {
-        let base_tab_index = (3 + (model_index * 4)) as isize;
-
+    fn new(window: &mut Window, cx: &mut App) -> Self {
         let model_name = single_line_input(
             "Model Name",
-            "e.g. gpt-5, claude-opus-4, gemini-2.5-pro",
+            "e.g. gpt-4o, claude-opus-4, gemini-2.5-pro",
             None,
-            base_tab_index + 1,
             window,
             cx,
         );
@@ -130,7 +96,6 @@ impl ModelInput {
             "Max Completion Tokens",
             "200000",
             Some("200000"),
-            base_tab_index + 2,
             window,
             cx,
         );
@@ -138,27 +103,16 @@ impl ModelInput {
             "Max Output Tokens",
             "Max Output Tokens",
             Some("32000"),
-            base_tab_index + 3,
             window,
             cx,
         );
-        let max_tokens = single_line_input(
-            "Max Tokens",
-            "Max Tokens",
-            Some("200000"),
-            base_tab_index + 4,
-            window,
-            cx,
-        );
-
+        let max_tokens = single_line_input("Max Tokens", "Max Tokens", Some("200000"), window, cx);
         let ModelCapabilities {
             tools,
             images,
             parallel_tool_calls,
             prompt_cache_key,
-            chat_completions,
         } = ModelCapabilities::default();
-
         Self {
             name: model_name,
             max_completion_tokens,
@@ -169,7 +123,6 @@ impl ModelInput {
                 supports_images: images.into(),
                 supports_parallel_tool_calls: parallel_tool_calls.into(),
                 supports_prompt_cache_key: prompt_cache_key.into(),
-                supports_chat_completions: chat_completions.into(),
             },
         }
     }
@@ -202,16 +155,32 @@ impl ModelInput {
                 .text(cx)
                 .parse::<u64>()
                 .map_err(|_| SharedString::from("Max Tokens must be a number"))?,
-            reasoning_effort: None,
             capabilities: ModelCapabilities {
                 tools: self.capabilities.supports_tools.selected(),
                 images: self.capabilities.supports_images.selected(),
                 parallel_tool_calls: self.capabilities.supports_parallel_tool_calls.selected(),
                 prompt_cache_key: self.capabilities.supports_prompt_cache_key.selected(),
-                chat_completions: self.capabilities.supports_chat_completions.selected(),
             },
         })
     }
+}
+
+fn single_line_input(
+    label: impl Into<SharedString>,
+    placeholder: impl Into<SharedString>,
+    text: Option<&str>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<InputField> {
+    cx.new(|cx| {
+        let input = InputField::new(window, cx, placeholder).label(label);
+        if let Some(text) = text {
+            input
+                .editor()
+                .update(cx, |editor, cx| editor.set_text(text, window, cx));
+        }
+        input
+    })
 }
 
 fn save_provider_to_settings(
@@ -264,7 +233,7 @@ fn save_provider_to_settings(
     let task = cx.write_credentials(&api_url, "Bearer", api_key.as_bytes());
     cx.spawn(async move |cx| {
         task.await
-            .map_err(|_| SharedString::from("Failed to write API key to keychain"))?;
+            .map_err(|_| "Failed to write API key to keychain")?;
         cx.update(|cx| {
             update_settings_file(fs, cx, |settings, _cx| {
                 settings
@@ -280,7 +249,8 @@ fn save_provider_to_settings(
                         },
                     );
             });
-        });
+        })
+        .ok();
         Ok(())
     })
 }
@@ -288,7 +258,6 @@ fn save_provider_to_settings(
 pub struct AddLlmProviderModal {
     provider: LlmCompatibleProvider,
     input: AddLlmProviderInput,
-    scroll_handle: ScrollHandle,
     focus_handle: FocusHandle,
     last_error: Option<SharedString>,
 }
@@ -309,7 +278,6 @@ impl AddLlmProviderModal {
             provider,
             last_error: None,
             focus_handle: cx.focus_handle(),
-            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -344,11 +312,10 @@ impl AddLlmProviderModal {
                     .child(Label::new("Models").size(LabelSize::Small))
                     .child(
                         Button::new("add-model", "Add Model")
-                            .start_icon(
-                                Icon::new(IconName::Plus)
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Muted),
-                            )
+                            .icon(IconName::Plus)
+                            .icon_position(IconPosition::Start)
+                            .icon_size(IconSize::XSmall)
+                            .icon_color(Color::Muted)
                             .label_size(LabelSize::Small)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.input.add_model(window, cx);
@@ -432,30 +399,15 @@ impl AddLlmProviderModal {
                                 cx.notify();
                             },
                         )),
-                    )
-                    .child(
-                        Checkbox::new(
-                            ("supports-chat-completions", ix),
-                            model.capabilities.supports_chat_completions,
-                        )
-                        .label("Supports /chat/completions")
-                        .on_click(cx.listener(
-                            move |this, checked, _window, cx| {
-                                this.input.models[ix].capabilities.supports_chat_completions =
-                                    *checked;
-                                cx.notify();
-                            },
-                        )),
                     ),
             )
             .when(has_more_than_one_model, |this| {
                 this.child(
                     Button::new(("remove-model", ix), "Remove Model")
-                        .start_icon(
-                            Icon::new(IconName::Trash)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
+                        .icon(IconName::Trash)
+                        .icon_position(IconPosition::Start)
+                        .icon_size(IconSize::XSmall)
+                        .icon_color(Color::Muted)
                         .label_size(LabelSize::Small)
                         .style(ButtonStyle::Outlined)
                         .full_width()
@@ -465,19 +417,6 @@ impl AddLlmProviderModal {
                         })),
                 )
             })
-    }
-
-    fn on_tab(&mut self, _: &menu::SelectNext, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_next(cx);
-    }
-
-    fn on_tab_prev(
-        &mut self,
-        _: &menu::SelectPrevious,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        window.focus_prev(cx);
     }
 }
 
@@ -492,29 +431,17 @@ impl Focusable for AddLlmProviderModal {
 impl ModalView for AddLlmProviderModal {}
 
 impl Render for AddLlmProviderModal {
-    fn render(&mut self, window: &mut ui::Window, cx: &mut ui::Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut ui::Window, cx: &mut ui::Context<Self>) -> impl IntoElement {
         let focus_handle = self.focus_handle(cx);
 
-        let window_size = window.viewport_size();
-        let rem_size = window.rem_size();
-        let is_large_window = window_size.height / rem_size > rems_from_px(600.).0;
-
-        let modal_max_height = if is_large_window {
-            rems_from_px(450.)
-        } else {
-            rems_from_px(200.)
-        };
-
-        v_flex()
+        div()
             .id("add-llm-provider-modal")
             .key_context("AddLlmProviderModal")
             .w(rems(34.))
             .elevation_3(cx)
             .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(Self::on_tab))
-            .on_action(cx.listener(Self::on_tab_prev))
             .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
-                this.focus_handle(cx).focus(window, cx);
+                this.focus_handle(cx).focus(window);
             }))
             .child(
                 Modal::new("configure-context-server", None)
@@ -535,26 +462,17 @@ impl Render for AddLlmProviderModal {
                         )
                     })
                     .child(
-                        div()
+                        v_flex()
+                            .id("modal_content")
                             .size_full()
-                            .vertical_scrollbar_for(&self.scroll_handle, window, cx)
-                            .child(
-                                v_flex()
-                                    .id("modal_content")
-                                    .size_full()
-                                    .tab_group()
-                                    .max_h(modal_max_height)
-                                    .pl_3()
-                                    .pr_4()
-                                    .pb_2()
-                                    .gap_2()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.scroll_handle)
-                                    .child(self.input.provider_name.clone())
-                                    .child(self.input.api_url.clone())
-                                    .child(self.input.api_key.clone())
-                                    .child(self.render_model_section(cx)),
-                            ),
+                            .max_h_128()
+                            .overflow_y_scroll()
+                            .px(DynamicSpacing::Base12.rems(cx))
+                            .gap(DynamicSpacing::Base04.rems(cx))
+                            .child(self.input.provider_name.clone())
+                            .child(self.input.api_url.clone())
+                            .child(self.input.api_key.clone())
+                            .child(self.render_model_section(cx)),
                     )
                     .footer(
                         ModalFooter::new().end_slot(
@@ -606,7 +524,6 @@ mod tests {
     use project::Project;
     use settings::SettingsStore;
     use util::path;
-    use workspace::MultiWorkspace;
 
     #[gpui::test]
     async fn test_save_provider_invalid_inputs(cx: &mut TestAppContext) {
@@ -725,9 +642,11 @@ mod tests {
         let cx = setup_test(cx).await;
 
         cx.update(|window, cx| {
-            let model_input = ModelInput::new(0, window, cx);
+            let model_input = ModelInput::new(window, cx);
             model_input.name.update(cx, |input, cx| {
-                input.set_text("somemodel", window, cx);
+                input.editor().update(cx, |editor, cx| {
+                    editor.set_text("somemodel", window, cx);
+                });
             });
             assert_eq!(
                 model_input.capabilities.supports_tools,
@@ -745,17 +664,12 @@ mod tests {
                 model_input.capabilities.supports_prompt_cache_key,
                 ToggleState::Unselected
             );
-            assert_eq!(
-                model_input.capabilities.supports_chat_completions,
-                ToggleState::Selected
-            );
 
             let parsed_model = model_input.parse(cx).unwrap();
             assert!(parsed_model.capabilities.tools);
             assert!(!parsed_model.capabilities.images);
             assert!(!parsed_model.capabilities.parallel_tool_calls);
             assert!(!parsed_model.capabilities.prompt_cache_key);
-            assert!(parsed_model.capabilities.chat_completions);
         });
     }
 
@@ -764,23 +678,23 @@ mod tests {
         let cx = setup_test(cx).await;
 
         cx.update(|window, cx| {
-            let mut model_input = ModelInput::new(0, window, cx);
+            let mut model_input = ModelInput::new(window, cx);
             model_input.name.update(cx, |input, cx| {
-                input.set_text("somemodel", window, cx);
+                input.editor().update(cx, |editor, cx| {
+                    editor.set_text("somemodel", window, cx);
+                });
             });
 
             model_input.capabilities.supports_tools = ToggleState::Unselected;
             model_input.capabilities.supports_images = ToggleState::Unselected;
             model_input.capabilities.supports_parallel_tool_calls = ToggleState::Unselected;
             model_input.capabilities.supports_prompt_cache_key = ToggleState::Unselected;
-            model_input.capabilities.supports_chat_completions = ToggleState::Unselected;
 
             let parsed_model = model_input.parse(cx).unwrap();
             assert!(!parsed_model.capabilities.tools);
             assert!(!parsed_model.capabilities.images);
             assert!(!parsed_model.capabilities.parallel_tool_calls);
             assert!(!parsed_model.capabilities.prompt_cache_key);
-            assert!(!parsed_model.capabilities.chat_completions);
         });
     }
 
@@ -789,16 +703,17 @@ mod tests {
         let cx = setup_test(cx).await;
 
         cx.update(|window, cx| {
-            let mut model_input = ModelInput::new(0, window, cx);
+            let mut model_input = ModelInput::new(window, cx);
             model_input.name.update(cx, |input, cx| {
-                input.set_text("somemodel", window, cx);
+                input.editor().update(cx, |editor, cx| {
+                    editor.set_text("somemodel", window, cx);
+                });
             });
 
             model_input.capabilities.supports_tools = ToggleState::Selected;
             model_input.capabilities.supports_images = ToggleState::Unselected;
             model_input.capabilities.supports_parallel_tool_calls = ToggleState::Selected;
             model_input.capabilities.supports_prompt_cache_key = ToggleState::Unselected;
-            model_input.capabilities.supports_chat_completions = ToggleState::Selected;
 
             let parsed_model = model_input.parse(cx).unwrap();
             assert_eq!(parsed_model.name, "somemodel");
@@ -806,7 +721,6 @@ mod tests {
             assert!(!parsed_model.capabilities.images);
             assert!(parsed_model.capabilities.parallel_tool_calls);
             assert!(!parsed_model.capabilities.prompt_cache_key);
-            assert!(parsed_model.capabilities.chat_completions);
         });
     }
 
@@ -814,18 +728,16 @@ mod tests {
         cx.update(|cx| {
             let store = SettingsStore::test(cx);
             cx.set_global(store);
-            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            theme::init(theme::LoadThemes::JustBase, cx);
 
-            language_model::init(cx);
-            editor::init(cx);
+            language_model::init_settings(cx);
         });
 
         let fs = FakeFs::new(cx.executor());
         cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let _workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (_, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
 
         cx
     }
@@ -839,7 +751,9 @@ mod tests {
     ) -> Option<SharedString> {
         fn set_text(input: &Entity<InputField>, text: &str, window: &mut Window, cx: &mut App) {
             input.update(cx, |input, cx| {
-                input.set_text(text, window, cx);
+                input.editor().update(cx, |editor, cx| {
+                    editor.set_text(text, window, cx);
+                });
             });
         }
 
@@ -853,7 +767,7 @@ mod tests {
                 models.iter().enumerate()
             {
                 if i >= input.models.len() {
-                    input.models.push(ModelInput::new(i, window, cx));
+                    input.models.push(ModelInput::new(window, cx));
                 }
                 let model = &mut input.models[i];
                 set_text(&model.name, name, window, cx);

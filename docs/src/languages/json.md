@@ -1,8 +1,3 @@
----
-title: JSON
-description: "Configure JSON language support in Zed, including language servers, formatting, and debugging."
----
-
 # JSON
 
 JSON support is available natively in Zed.
@@ -21,7 +16,7 @@ If you use files with the `*.jsonc` extension when using `Format Document` or ha
 
 To workaround this behavior you can add the following to your `.prettierrc` configuration file:
 
-```json
+```json [settings]
 {
   "overrides": [
     {
@@ -45,7 +40,7 @@ To specify a schema inline with your JSON files, add a `$schema` top level key l
 
 For example to for a `.luarc.json` for use with [lua-language-server](https://github.com/LuaLS/lua-language-server/):
 
-```json
+```json [settings]
 {
   "$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
   "runtime.version": "Lua 5.4"
@@ -54,7 +49,9 @@ For example to for a `.luarc.json` for use with [lua-language-server](https://gi
 
 ### Schema Specification via Settings
 
-You can associate JSON Schemas with file paths using relative paths in your language server settings. Zed resolves paths relative to your project root:
+You can alternatively associate JSON Schemas with file paths by via Zed LSP settings.
+
+To
 
 ```json [settings]
 "lsp": {
@@ -62,14 +59,6 @@ You can associate JSON Schemas with file paths using relative paths in your lang
     "settings": {
       "json": {
         "schemas": [
-          {
-            "fileMatch": ["config/*.json"],
-            "url": "./schemas/custom-schema.json"
-          },
-          {
-            "fileMatch": ["*.config.json"],
-            "url": "~/global-schemas/shared.json"
-          },
           {
             "fileMatch": ["*/*.luarc.json"],
             "url": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json"
@@ -80,8 +69,6 @@ You can associate JSON Schemas with file paths using relative paths in your lang
   }
 }
 ```
-
-Paths starting with `./` resolve relative to the worktree root. Paths starting with `~/` expand to your home directory.
 
 You can also pass any of the [supported settings](https://github.com/Microsoft/vscode/blob/main/extensions/json-language-features/server/README.md#settings) to json-language-server by specifying them in your Zed settings.json:
 

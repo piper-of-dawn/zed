@@ -1,8 +1,3 @@
----
-title: YAML
-description: "Configure YAML language support in Zed, including language servers, formatting, and debugging."
----
-
 # YAML
 
 YAML support is available natively in Zed.
@@ -12,9 +7,7 @@ YAML support is available natively in Zed.
 
 ## Configuration
 
-You can configure various [yaml-language-server settings](https://github.com/redhat-developer/yaml-language-server?tab=readme-ov-file#language-server-settings) by adding them to your Zed settings.json in a `yaml-language-server` block under the `lsp` key.
-
-You can configure custom YAML schemas using relative paths. Zed resolves paths relative to your project root:
+You can configure various [yaml-language-server settings](https://github.com/redhat-developer/yaml-language-server?tab=readme-ov-file#language-server-settings) by adding them to your Zed settings.json in a `yaml-language-server` block under the `lsp` key. For example:
 
 ```json [settings]
   "lsp": {
@@ -27,16 +20,13 @@ You can configure custom YAML schemas using relative paths. Zed resolves paths r
           },
           "schemas": {
               "https://getcomposer.org/schema.json": ["/*"],
-              "./schemas/kubernetes.yaml": "k8s/**/*.yaml",
-              "~/global-schemas/docker-compose.yaml": "docker-compose*.yml"
+              "../relative/path/schema.json": ["/config*.yaml"]
           }
         }
       }
     }
   }
 ```
-
-Paths starting with `./` resolve relative to the worktree root. Paths starting with `~/` expand to your home directory.
 
 Note, settings keys must be nested, so `yaml.keyOrdering` becomes `{"yaml": { "keyOrdering": true }}`.
 
@@ -48,7 +38,7 @@ By default, Zed uses Prettier for formatting YAML files.
 
 You can customize the formatting behavior of Prettier. For example to use single-quotes in yaml files add the following to your `.prettierrc` configuration file:
 
-```json
+```json [settings]
 {
   "overrides": [
     {
@@ -63,7 +53,7 @@ You can customize the formatting behavior of Prettier. For example to use single
 
 ### yaml-language-server Formatting
 
-To use `yaml-language-server` instead of Prettier for YAML formatting, configure in Settings ({#kb zed::OpenSettings}) under Languages > YAML, or add to your settings file:
+To use `yaml-language-server` instead of Prettier for YAML formatting, add the following to your Zed `settings.json`:
 
 ```json [settings]
   "languages": {

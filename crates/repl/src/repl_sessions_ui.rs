@@ -21,8 +21,6 @@ actions!(
         RunInPlace,
         /// Clears all outputs in the REPL.
         ClearOutputs,
-        /// Clears the output of the cell at the current cursor position.
-        ClearCurrentOutput,
         /// Opens the REPL sessions panel.
         Sessions,
         /// Interrupts the currently running kernel.
@@ -80,18 +78,16 @@ pub fn init(cx: &mut App) {
                 return;
             }
 
-            cx.defer_in(window, |editor, _window, cx| {
-                let project = editor.project().cloned();
+            cx.defer_in(window, |editor, window, cx| {
+                let workspace = Workspace::for_window(window, cx);
+                let project = workspace.map(|workspace| workspace.read(cx).project().clone());
 
-                let is_valid_project = project
+                let is_local_project = project
                     .as_ref()
-                    .map(|project| {
-                        let p = project.read(cx);
-                        !p.is_via_collab()
-                    })
+                    .map(|project| project.read(cx).is_local())
                     .unwrap_or(false);
 
-                if !is_valid_project {
+                if !is_local_project {
                     return;
                 }
 
@@ -106,7 +102,7 @@ pub fn init(cx: &mut App) {
                 let editor_handle = cx.entity().downgrade();
 
                 if let Some(language) = language
-                    && language.name() == "Python"
+                    && language.name() == "Python".into()
                     && let (Some(project_path), Some(project)) = (project_path, project)
                 {
                     let store = ReplStore::global(cx);
@@ -195,7 +191,7 @@ impl Item for ReplSessionsPage {
         false
     }
 
-    fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(workspace::item::ItemEvent)) {
+    fn to_item_events(event: &Self::Event, mut f: impl FnMut(workspace::item::ItemEvent)) {
         f(*event)
     }
 }
@@ -204,8 +200,7 @@ impl Render for ReplSessionsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = ReplStore::global(cx);
 
-        let (kernel_specifications, sessions) = store.update(cx, |store, cx| {
-            store.ensure_kernelspecs(cx);
+        let (kernel_specifications, sessions) = store.update(cx, |store, _cx| {
             (
                 store
                     .pure_jupyter_kernel_specifications()

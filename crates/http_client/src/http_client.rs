@@ -1,21 +1,22 @@
 mod async_body;
-#[cfg(not(target_family = "wasm"))]
 pub mod github;
-#[cfg(not(target_family = "wasm"))]
 pub mod github_download;
 
 pub use anyhow::{Result, anyhow};
-pub use async_body::{AsyncBody, Inner, Json};
+pub use async_body::{AsyncBody, Inner};
 use derive_more::Deref;
 use http::HeaderValue;
 pub use http::{self, Method, Request, Response, StatusCode, Uri, request::Builder};
 
-use futures::future::BoxFuture;
+use futures::{
+    FutureExt as _,
+    future::{self, BoxFuture},
+};
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::sync::Arc;
 #[cfg(feature = "test-support")]
-use std::{any::type_name, fmt};
+use std::fmt;
+use std::{any::type_name, sync::Arc};
 pub use url::{Host, Url};
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
@@ -58,9 +59,9 @@ impl HttpRequestExt for http::request::Builder {
 }
 
 pub trait HttpClient: 'static + Send + Sync {
-    fn user_agent(&self) -> Option<&HeaderValue>;
+    fn type_name(&self) -> &'static str;
 
-    fn proxy(&self) -> Option<&Url>;
+    fn user_agent(&self) -> Option<&HeaderValue>;
 
     fn send(
         &self,
@@ -105,9 +106,19 @@ pub trait HttpClient: 'static + Send + Sync {
         }
     }
 
+    fn proxy(&self) -> Option<&Url>;
+
     #[cfg(feature = "test-support")]
     fn as_fake(&self) -> &FakeHttpClient {
         panic!("called as_fake on {}", type_name::<Self>())
+    }
+
+    fn send_multipart_form<'a>(
+        &'a self,
+        _url: &str,
+        _request: reqwest::multipart::Form,
+    ) -> BoxFuture<'a, anyhow::Result<Response<AsyncBody>>> {
+        future::ready(Err(anyhow!("not implemented"))).boxed()
     }
 }
 
@@ -152,18 +163,36 @@ impl HttpClient for HttpClientWithProxy {
         self.proxy.as_ref()
     }
 
+    fn type_name(&self) -> &'static str {
+        self.client.type_name()
+    }
+
     #[cfg(feature = "test-support")]
     fn as_fake(&self) -> &FakeHttpClient {
         self.client.as_fake()
     }
+
+    fn send_multipart_form<'a>(
+        &'a self,
+        url: &str,
+        form: reqwest::multipart::Form,
+    ) -> BoxFuture<'a, anyhow::Result<Response<AsyncBody>>> {
+        self.client.send_multipart_form(url, form)
+    }
 }
 
 /// An [`HttpClient`] that has a base URL.
-#[derive(Deref)]
 pub struct HttpClientWithUrl {
     base_url: Mutex<String>,
-    #[deref]
     client: HttpClientWithProxy,
+}
+
+impl std::ops::Deref for HttpClientWithUrl {
+    type Target = HttpClientWithProxy;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
 }
 
 impl HttpClientWithUrl {
@@ -285,9 +314,21 @@ impl HttpClient for HttpClientWithUrl {
         self.client.proxy.as_ref()
     }
 
+    fn type_name(&self) -> &'static str {
+        self.client.type_name()
+    }
+
     #[cfg(feature = "test-support")]
     fn as_fake(&self) -> &FakeHttpClient {
         self.client.as_fake()
+    }
+
+    fn send_multipart_form<'a>(
+        &'a self,
+        url: &str,
+        request: reqwest::multipart::Form,
+    ) -> BoxFuture<'a, anyhow::Result<Response<AsyncBody>>> {
+        self.client.send_multipart_form(url, request)
     }
 }
 
@@ -343,6 +384,10 @@ impl HttpClient for BlockedHttpClient {
         None
     }
 
+    fn type_name(&self) -> &'static str {
+        type_name::<Self>()
+    }
+
     #[cfg(feature = "test-support")]
     fn as_fake(&self) -> &FakeHttpClient {
         panic!("called as_fake on {}", type_name::<Self>())
@@ -383,7 +428,6 @@ impl FakeHttpClient {
     }
 
     pub fn with_404_response() -> Arc<HttpClientWithUrl> {
-        log::warn!("Using fake HTTP client with 404 response");
         Self::create(|_| async move {
             Ok(Response::builder()
                 .status(404)
@@ -393,7 +437,6 @@ impl FakeHttpClient {
     }
 
     pub fn with_200_response() -> Arc<HttpClientWithUrl> {
-        log::warn!("Using fake HTTP client with 200 response");
         Self::create(|_| async move {
             Ok(Response::builder()
                 .status(200)
@@ -437,6 +480,10 @@ impl HttpClient for FakeHttpClient {
 
     fn proxy(&self) -> Option<&Url> {
         None
+    }
+
+    fn type_name(&self) -> &'static str {
+        type_name::<Self>()
     }
 
     fn as_fake(&self) -> &FakeHttpClient {

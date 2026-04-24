@@ -71,7 +71,9 @@ impl FontFamilyCache {
             return;
         }
 
-        let text_system = cx.update(|cx| App::text_system(cx).clone());
+        let Ok(text_system) = cx.update(|cx| App::text_system(cx).clone()) else {
+            return;
+        };
 
         let state = self.state.clone();
 

@@ -3,7 +3,7 @@ mod convert;
 mod delete;
 mod increment;
 pub(crate) mod mark;
-pub(crate) mod paste;
+mod paste;
 pub(crate) mod repeat;
 mod scroll;
 pub(crate) mod search;
@@ -88,8 +88,6 @@ actions!(
         ConvertToRot47,
         /// Toggles comments for selected lines.
         ToggleComments,
-        /// Toggles block comments for selected lines.
-        ToggleBlockComments,
         /// Shows the current location in the file.
         ShowLocation,
         /// Undoes the last change.
@@ -102,9 +100,9 @@ actions!(
         GoToTab,
         /// Go to previous tab page (with count support).
         GoToPreviousTab,
-        /// Goes to the previous reference to the symbol under the cursor.
+        /// Go to tab page (with count support).
         GoToPreviousReference,
-        /// Goes to the next reference to the symbol under the cursor.
+        /// Go to previous tab page (with count support).
         GoToNextReference,
     ]
 );
@@ -127,7 +125,6 @@ pub(crate) fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(editor, cx, Vim::yank_line);
     Vim::action(editor, cx, Vim::yank_to_end_of_line);
     Vim::action(editor, cx, Vim::toggle_comments);
-    Vim::action(editor, cx, Vim::toggle_block_comments);
     Vim::action(editor, cx, Vim::paste);
     Vim::action(editor, cx, Vim::show_location);
 
@@ -148,7 +145,7 @@ pub(crate) fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         vim.record_current_action(cx);
         vim.update_editor(cx, |_, editor, cx| {
             editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                s.move_with(&mut |map, selection| {
+                s.move_with(|map, selection| {
                     if selection.is_empty() {
                         selection.end = movement::right(map, selection.end)
                     }
@@ -162,7 +159,7 @@ pub(crate) fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(editor, cx, |vim, _: &HelixCollapseSelection, window, cx| {
         vim.update_editor(cx, |_, editor, cx| {
             editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                s.move_with(&mut |map, selection| {
+                s.move_with(|map, selection| {
                     let mut point = selection.head();
                     if !selection.reversed && !selection.is_empty() {
                         point = movement::left(map, selection.head());
@@ -466,9 +463,6 @@ impl Vim {
             Some(Operator::ToggleComments) => {
                 self.toggle_comments_motion(motion, times, forced_motion, window, cx)
             }
-            Some(Operator::ToggleBlockComments) => {
-                self.toggle_block_comments_motion(motion, times, forced_motion, window, cx)
-            }
             Some(Operator::ReplaceWithRegister) => {
                 self.replace_with_register_motion(motion, times, forced_motion, window, cx)
             }
@@ -539,9 +533,6 @@ impl Vim {
                 Some(Operator::ToggleComments) => {
                     self.toggle_comments_object(object, around, times, window, cx)
                 }
-                Some(Operator::ToggleBlockComments) => {
-                    self.toggle_block_comments_object(object, around, times, window, cx)
-                }
                 Some(Operator::ReplaceWithRegister) => {
                     self.replace_with_register_object(object, around, window, cx)
                 }
@@ -587,37 +578,20 @@ impl Vim {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.update_editor(cx, |vim, editor, cx| {
-            let text_layout_details = editor.text_layout_details(window, cx);
-
-            // If vim is in temporary mode and the motion being used is
-            // `EndOfLine` ($), we'll want to disable clipping at line ends so
-            // that the newline character can be selected so that, when moving
-            // back to visual mode, the cursor will be placed after the last
-            // character and not before it.
-            let clip_at_line_ends = editor.clip_at_line_ends(cx);
-            let should_disable_clip = matches!(motion, Motion::EndOfLine { .. }) && vim.temp_mode;
-
-            if should_disable_clip {
-                editor.set_clip_at_line_ends(false, cx)
-            };
-
+        self.update_editor(cx, |_, editor, cx| {
+            let text_layout_details = editor.text_layout_details(window);
             editor.change_selections(
                 SelectionEffects::default().nav_history(motion.push_to_jump_list()),
                 window,
                 cx,
                 |s| {
-                    s.move_cursors_with(&mut |map, cursor, goal| {
+                    s.move_cursors_with(|map, cursor, goal| {
                         motion
                             .move_point(map, cursor, goal, times, &text_layout_details)
                             .unwrap_or((cursor, goal))
                     })
                 },
-            );
-
-            if should_disable_clip {
-                editor.set_clip_at_line_ends(clip_at_line_ends, cx);
-            };
+            )
         });
     }
 
@@ -626,9 +600,7 @@ impl Vim {
         self.switch_mode(Mode::Insert, false, window, cx);
         self.update_editor(cx, |_, editor, cx| {
             editor.change_selections(Default::default(), window, cx, |s| {
-                s.move_cursors_with(&mut |map, cursor, _| {
-                    (right(map, cursor, 1), SelectionGoal::None)
-                });
+                s.move_cursors_with(|map, cursor, _| (right(map, cursor, 1), SelectionGoal::None));
             });
         });
     }
@@ -639,7 +611,7 @@ impl Vim {
             let current_mode = self.mode;
             self.update_editor(cx, |_, editor, cx| {
                 editor.change_selections(Default::default(), window, cx, |s| {
-                    s.move_with(&mut |map, selection| {
+                    s.move_with(|map, selection| {
                         if current_mode == Mode::VisualLine {
                             let start_of_line = motion::start_of_line(map, false, selection.start);
                             selection.collapse_to(start_of_line, SelectionGoal::None)
@@ -663,7 +635,7 @@ impl Vim {
         self.switch_mode(Mode::Insert, false, window, cx);
         self.update_editor(cx, |_, editor, cx| {
             editor.change_selections(Default::default(), window, cx, |s| {
-                s.move_cursors_with(&mut |map, cursor, _| {
+                s.move_cursors_with(|map, cursor, _| {
                     (
                         first_non_whitespace(map, false, cursor),
                         SelectionGoal::None,
@@ -683,7 +655,7 @@ impl Vim {
         self.switch_mode(Mode::Insert, false, window, cx);
         self.update_editor(cx, |_, editor, cx| {
             editor.change_selections(Default::default(), window, cx, |s| {
-                s.move_cursors_with(&mut |map, cursor, _| {
+                s.move_cursors_with(|map, cursor, _| {
                     (next_line_end(map, cursor, 1), SelectionGoal::None)
                 });
             });
@@ -699,13 +671,13 @@ impl Vim {
         self.start_recording(cx);
         self.switch_mode(Mode::Insert, false, window, cx);
         self.update_editor(cx, |vim, editor, cx| {
-            if let Some(Mark::Local(marks)) = vim.get_mark("^", editor, window, cx)
-                && !marks.is_empty()
-            {
-                editor.change_selections(Default::default(), window, cx, |s| {
-                    s.select_anchor_ranges(marks.iter().map(|mark| *mark..*mark))
-                });
-            }
+            let Some(Mark::Local(marks)) = vim.get_mark("^", editor, window, cx) else {
+                return;
+            };
+
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_anchor_ranges(marks.iter().map(|mark| *mark..*mark))
+            });
         });
     }
 
@@ -740,10 +712,10 @@ impl Vim {
                     .collect::<Vec<_>>();
                 editor.edit_with_autoindent(edits, cx);
                 editor.change_selections(Default::default(), window, cx, |s| {
-                    s.move_with(&mut |map, selection| {
-                        let previous_line = map.start_of_relative_buffer_row(selection.start, -1);
+                    s.move_cursors_with(|map, cursor, _| {
+                        let previous_line = map.start_of_relative_buffer_row(cursor, -1);
                         let insert_point = motion::end_of_line(map, false, previous_line, 1);
-                        selection.collapse_to(insert_point, SelectionGoal::None)
+                        (insert_point, SelectionGoal::None)
                     });
                 });
             });
@@ -759,19 +731,14 @@ impl Vim {
         self.start_recording(cx);
         self.switch_mode(Mode::Insert, false, window, cx);
         self.update_editor(cx, |_, editor, cx| {
+            let text_layout_details = editor.text_layout_details(window);
             editor.transact(window, cx, |editor, window, cx| {
                 let selections = editor.selections.all::<Point>(&editor.display_snapshot(cx));
                 let snapshot = editor.buffer().read(cx).snapshot(cx);
 
                 let selection_end_rows: BTreeSet<u32> = selections
                     .into_iter()
-                    .map(|selection| {
-                        if !selection.is_empty() && selection.end.column == 0 {
-                            selection.end.row.saturating_sub(1)
-                        } else {
-                            selection.end.row
-                        }
-                    })
+                    .map(|selection| selection.end.row)
                     .collect();
                 let edits = selection_end_rows
                     .into_iter()
@@ -786,17 +753,14 @@ impl Vim {
                     })
                     .collect::<Vec<_>>();
                 editor.change_selections(Default::default(), window, cx, |s| {
-                    s.move_with(&mut |map, selection| {
-                        let current_line = if !selection.is_empty() && selection.end.column() == 0 {
-                            // If this is an insert after a selection to the end of the line, the
-                            // cursor needs to be bumped back, because it'll be at the start of the
-                            // *next* line.
-                            map.start_of_relative_buffer_row(selection.end, -1)
-                        } else {
-                            selection.end
-                        };
-                        let insert_point = motion::end_of_line(map, false, current_line, 1);
-                        selection.collapse_to(insert_point, SelectionGoal::None)
+                    s.maybe_move_cursors_with(|map, cursor, goal| {
+                        Motion::CurrentLine.move_point(
+                            map,
+                            cursor,
+                            goal,
+                            None,
+                            &text_layout_details,
+                        )
                     });
                 });
                 editor.edit_with_autoindent(edits, cx);
@@ -867,7 +831,7 @@ impl Vim {
                 editor.edit(edits, cx);
 
                 editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                    s.move_with(&mut |_, selection| {
+                    s.move_with(|_, selection| {
                         if let Some(position) = original_positions.get(&selection.id) {
                             selection.collapse_to(*position, SelectionGoal::None);
                         }
@@ -941,7 +905,7 @@ impl Vim {
         Vim::take_forced_motion(cx);
         self.update_editor(cx, |vim, editor, cx| {
             let selection = editor.selections.newest_anchor();
-            let Some((buffer, point)) = editor
+            let Some((buffer, point, _)) = editor
                 .buffer()
                 .read(cx)
                 .point_to_buffer_point(selection.head(), cx)
@@ -966,16 +930,17 @@ impl Vim {
             let current_line = point.row;
             let percentage = current_line as f32 / lines as f32;
             let modified = if buffer.is_dirty() { " [modified]" } else { "" };
-            vim.set_status_label(
+            vim.status_label = Some(
                 format!(
                     "{}{} {} lines --{:.0}%--",
                     filename,
                     modified,
                     lines,
                     percentage * 100.0,
-                ),
-                cx,
+                )
+                .into(),
             );
+            cx.notify();
         });
     }
 
@@ -986,38 +951,6 @@ impl Vim {
             editor.transact(window, cx, |editor, window, cx| {
                 let original_positions = vim.save_selection_starts(editor, cx);
                 editor.toggle_comments(&Default::default(), window, cx);
-                vim.restore_selection_cursors(editor, window, cx, original_positions);
-            });
-        });
-        if self.mode.is_visual() {
-            self.switch_mode(Mode::Normal, true, window, cx)
-        }
-    }
-
-    fn toggle_block_comments(
-        &mut self,
-        _: &ToggleBlockComments,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.record_current_action(cx);
-        self.store_visual_marks(window, cx);
-        let is_visual_line = self.mode == Mode::VisualLine;
-        self.update_editor(cx, |vim, editor, cx| {
-            editor.transact(window, cx, |editor, window, cx| {
-                let original_positions = vim.save_selection_starts(editor, cx);
-                if is_visual_line {
-                    editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                        s.move_with(&mut |map, selection| {
-                            let start_row = selection.start.to_point(map).row;
-                            let end_row = selection.end.to_point(map).row;
-                            let end_col = map.buffer_snapshot().line_len(MultiBufferRow(end_row));
-                            selection.start = Point::new(start_row, 0).to_display_point(map);
-                            selection.end = Point::new(end_row, end_col).to_display_point(map);
-                        });
-                    });
-                }
-                editor.toggle_block_comments(&Default::default(), window, cx);
                 vim.restore_selection_cursors(editor, window, cx, original_positions);
             });
         });
@@ -1075,7 +1008,7 @@ impl Vim {
                 }
                 editor.set_clip_at_line_ends(true, cx);
                 editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                    s.move_with(&mut |map, selection| {
+                    s.move_with(|map, selection| {
                         let point = movement::saturating_left(map, selection.head());
                         selection.collapse_to(point, SelectionGoal::None)
                     });
@@ -1111,7 +1044,7 @@ impl Vim {
         mut positions: HashMap<usize, Anchor>,
     ) {
         editor.change_selections(Default::default(), window, cx, |s| {
-            s.move_with(&mut |map, selection| {
+            s.move_with(|map, selection| {
                 if let Some(anchor) = positions.remove(&selection.id) {
                     selection.collapse_to(anchor.to_display_point(map), SelectionGoal::None);
                 }
@@ -1917,24 +1850,6 @@ mod test {
     }
 
     #[gpui::test]
-    async fn test_percent_in_comment(cx: &mut TestAppContext) {
-        let mut cx = NeovimBackedTestContext::new(cx).await;
-        cx.simulate_at_each_offset("%", "// ˇconsole.logˇ(ˇvaˇrˇ)ˇ;")
-            .await
-            .assert_matches();
-        cx.simulate_at_each_offset("%", "// ˇ{ ˇ{ˇ}ˇ }ˇ")
-            .await
-            .assert_matches();
-        // Template-style brackets (like Liquid {% %} and {{ }})
-        cx.simulate_at_each_offset("%", "ˇ{ˇ% block %ˇ}ˇ")
-            .await
-            .assert_matches();
-        cx.simulate_at_each_offset("%", "ˇ{ˇ{ˇ var ˇ}ˇ}ˇ")
-            .await
-            .assert_matches();
-    }
-
-    #[gpui::test]
     async fn test_end_of_line_with_neovim(cx: &mut gpui::TestAppContext) {
         let mut cx = NeovimBackedTestContext::new(cx).await;
 
@@ -1999,19 +1914,6 @@ mod test {
         );
 
         cx.assert_binding_normal("e", indoc! {"ˇassert_binding"}, indoc! {"asserˇt_binding"});
-
-        // Subword end should stop at EOL
-        cx.assert_binding_normal("e", indoc! {"foo_bˇar\nbaz"}, indoc! {"foo_baˇr\nbaz"});
-
-        // Already at subword end, should move to next subword on next line
-        cx.assert_binding_normal(
-            "e",
-            indoc! {"foo_barˇ\nbaz_qux"},
-            indoc! {"foo_bar\nbaˇz_qux"},
-        );
-
-        // CamelCase at EOL
-        cx.assert_binding_normal("e", indoc! {"fooˇBar\nbaz"}, indoc! {"fooBaˇr\nbaz"});
 
         cx.assert_binding_normal("b", indoc! {"assert_ˇbinding"}, indoc! {"ˇassert_binding"});
 
@@ -2366,36 +2268,5 @@ mod test {
         cx.workspace(|workspace, _, cx| {
             assert_eq!(workspace.active_pane().read(cx).active_item_index(), 1);
         });
-    }
-
-    #[gpui::test]
-    async fn test_temporary_mode(cx: &mut gpui::TestAppContext) {
-        let mut cx = NeovimBackedTestContext::new(cx).await;
-
-        // Test jumping to the end of the line ($).
-        cx.set_shared_state(indoc! {"lorem ˇipsum"}).await;
-        cx.simulate_shared_keystrokes("i").await;
-        cx.shared_state().await.assert_matches();
-        cx.simulate_shared_keystrokes("ctrl-o $").await;
-        cx.shared_state().await.assert_eq(indoc! {"lorem ipsumˇ"});
-
-        // Test jumping to the next word.
-        cx.set_shared_state(indoc! {"loremˇ ipsum dolor"}).await;
-        cx.simulate_shared_keystrokes("a").await;
-        cx.shared_state().await.assert_matches();
-        cx.simulate_shared_keystrokes("a n d space ctrl-o w").await;
-        cx.shared_state()
-            .await
-            .assert_eq(indoc! {"lorem and ipsum ˇdolor"});
-
-        // Test yanking to end of line ($).
-        cx.set_shared_state(indoc! {"lorem ˇipsum dolor"}).await;
-        cx.simulate_shared_keystrokes("i").await;
-        cx.shared_state().await.assert_matches();
-        cx.simulate_shared_keystrokes("a n d space ctrl-o y $")
-            .await;
-        cx.shared_state()
-            .await
-            .assert_eq(indoc! {"lorem and ˇipsum dolor"});
     }
 }

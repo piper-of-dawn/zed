@@ -1,5 +1,7 @@
-use crate::{IconButtonShape, prelude::*};
-
+use crate::{
+    Clickable, Color, DynamicSpacing, Headline, HeadlineSize, Icon, IconButton, IconButtonShape,
+    IconName, Label, LabelCommon, LabelSize, h_flex, v_flex,
+};
 use gpui::{prelude::FluentBuilder, *};
 use smallvec::SmallVec;
 use theme::ActiveTheme;
@@ -156,18 +158,17 @@ impl RenderOnce for ModalHeader {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut children = self.children;
 
-        if let Some(headline) = self.headline {
+        if self.headline.is_some() {
             children.insert(
                 0,
-                Headline::new(headline)
-                    .size(HeadlineSize::Small)
+                Headline::new(self.headline.unwrap())
+                    .size(HeadlineSize::XSmall)
                     .color(Color::Muted)
                     .into_any_element(),
             );
         }
 
         h_flex()
-            .min_w_0()
             .flex_none()
             .justify_between()
             .w_full()
@@ -186,33 +187,26 @@ impl RenderOnce for ModalHeader {
             })
             .child(
                 v_flex()
-                    .min_w_0()
                     .flex_1()
                     .child(
                         h_flex()
-                            .w_full()
                             .gap_1()
-                            .justify_between()
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .when_some(self.icon, |this, icon| this.child(icon))
-                                    .children(children),
-                            )
-                            .when(self.show_dismiss_button, |this| {
-                                this.child(
-                                    IconButton::new("dismiss", IconName::Close)
-                                        .icon_size(IconSize::Small)
-                                        .on_click(|_, window, cx| {
-                                            window.dispatch_action(menu::Cancel.boxed_clone(), cx);
-                                        }),
-                                )
-                            }),
+                            .when_some(self.icon, |this, icon| this.child(icon))
+                            .children(children),
                     )
                     .when_some(self.description, |this, description| {
-                        this.child(Label::new(description).color(Color::Muted).mb_2().flex_1())
+                        this.child(Label::new(description).color(Color::Muted).mb_2())
                     }),
             )
+            .when(self.show_dismiss_button, |this| {
+                this.child(
+                    IconButton::new("dismiss", IconName::Close)
+                        .shape(IconButtonShape::Square)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(menu::Cancel.boxed_clone(), cx);
+                        }),
+                )
+            })
     }
 }
 
@@ -282,6 +276,7 @@ impl RenderOnce for ModalFooter {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         h_flex()
             .w_full()
+            .mt_4()
             .p(DynamicSpacing::Base08.rems(cx))
             .flex_none()
             .justify_between()
@@ -371,21 +366,15 @@ impl RenderOnce for Section {
                         .border_1()
                         .border_color(cx.theme().colors().border)
                         .bg(section_bg)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .pb_2()
-                                .size_full()
-                                .children(self.children),
-                        ),
+                        .py(DynamicSpacing::Base06.rems(cx))
+                        .gap_y(DynamicSpacing::Base04.rems(cx))
+                        .child(div().flex().flex_1().size_full().children(self.children)),
                 )
         } else {
             v_flex()
                 .w_full()
                 .flex_1()
                 .gap_y(DynamicSpacing::Base04.rems(cx))
-                .pb_2()
                 .when(self.padded, |this| {
                     this.px(DynamicSpacing::Base06.rems(cx) + DynamicSpacing::Base06.rems(cx))
                 })

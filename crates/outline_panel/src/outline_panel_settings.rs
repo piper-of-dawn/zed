@@ -1,4 +1,4 @@
-use editor::{EditorSettings, ui_scrollbar_settings_from_raw};
+use editor::EditorSettings;
 use gpui::{App, Pixels};
 use settings::RegisterSetting;
 pub use settings::{DockSide, Settings, ShowIndentGuides};
@@ -33,13 +33,9 @@ pub struct IndentGuidesSettings {
     pub show: ShowIndentGuides,
 }
 
-#[derive(Default)]
-pub(crate) struct OutlinePanelSettingsScrollbarProxy;
-
-impl ScrollbarVisibility for OutlinePanelSettingsScrollbarProxy {
+impl ScrollbarVisibility for OutlinePanelSettings {
     fn visibility(&self, cx: &App) -> ShowScrollbar {
-        OutlinePanelSettings::get_global(cx)
-            .scrollbar
+        self.scrollbar
             .show
             .unwrap_or_else(|| EditorSettings::get_global(cx).scrollbar.show)
     }
@@ -54,14 +50,7 @@ impl Settings for OutlinePanelSettings {
             dock: panel.dock.unwrap(),
             file_icons: panel.file_icons.unwrap(),
             folder_icons: panel.folder_icons.unwrap(),
-            git_status: panel.git_status.unwrap()
-                && content
-                    .git
-                    .as_ref()
-                    .unwrap()
-                    .enabled
-                    .unwrap()
-                    .is_git_status_enabled(),
+            git_status: panel.git_status.unwrap(),
             indent_size: panel.indent_size.unwrap(),
             indent_guides: IndentGuidesSettings {
                 show: panel.indent_guides.unwrap().show.unwrap(),
@@ -69,11 +58,7 @@ impl Settings for OutlinePanelSettings {
             auto_reveal_entries: panel.auto_reveal_entries.unwrap(),
             auto_fold_dirs: panel.auto_fold_dirs.unwrap(),
             scrollbar: ScrollbarSettings {
-                show: panel
-                    .scrollbar
-                    .unwrap()
-                    .show
-                    .map(ui_scrollbar_settings_from_raw),
+                show: panel.scrollbar.unwrap().show.map(Into::into),
             },
             expand_outlines_with_depth: panel.expand_outlines_with_depth.unwrap(),
         }

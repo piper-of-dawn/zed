@@ -1,8 +1,3 @@
----
-title: Java
-description: "Configure Java language support in Zed, including language servers, formatting, and debugging."
----
-
 # Java
 
 Java language support in Zed is provided by:

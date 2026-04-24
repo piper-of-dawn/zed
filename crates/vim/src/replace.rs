@@ -5,7 +5,7 @@ use crate::{
     state::Mode,
 };
 use editor::{
-    Anchor, Bias, Editor, EditorSnapshot, HighlightKey, SelectionEffects, ToOffset, ToPoint,
+    Anchor, Bias, Editor, EditorSnapshot, SelectionEffects, ToOffset, ToPoint,
     display_map::ToDisplayPoint,
 };
 use gpui::{ClipboardEntry, Context, Window, actions};
@@ -39,6 +39,8 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         vim.undo_replace(count, window, cx)
     });
 }
+
+struct VimExchange;
 
 impl Vim {
     pub(crate) fn multi_replace(
@@ -179,7 +181,7 @@ impl Vim {
     pub fn clear_exchange(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.stop_recording(cx);
         self.update_editor(cx, |_, editor, cx| {
-            editor.clear_background_highlights(HighlightKey::VimExchange, cx);
+            editor.clear_background_highlights::<VimExchange>(cx);
         });
         self.clear_operator(window, cx);
     }
@@ -195,7 +197,7 @@ impl Vim {
         self.stop_recording(cx);
         self.update_editor(cx, |vim, editor, cx| {
             editor.set_clip_at_line_ends(false, cx);
-            let text_layout_details = editor.text_layout_details(window, cx);
+            let text_layout_details = editor.text_layout_details(window);
             let mut selection = editor
                 .selections
                 .newest_display(&editor.display_snapshot(cx));
@@ -227,8 +229,7 @@ impl Vim {
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
-        if let Some((_, ranges)) = editor.clear_background_highlights(HighlightKey::VimExchange, cx)
-        {
+        if let Some((_, ranges)) = editor.clear_background_highlights::<VimExchange>(cx) {
             let previous_range = ranges[0].clone();
 
             let new_range_start = new_range.start.to_offset(&snapshot.buffer_snapshot());
@@ -263,17 +264,16 @@ impl Vim {
 
             if let Some(position) = final_cursor_position {
                 editor.change_selections(Default::default(), window, cx, |s| {
-                    s.move_with(&mut |_map, selection| {
+                    s.move_with(|_map, selection| {
                         selection.collapse_to(position, SelectionGoal::None);
                     });
                 })
             }
         } else {
             let ranges = [new_range];
-            editor.highlight_background(
-                HighlightKey::VimExchange,
+            editor.highlight_background::<VimExchange>(
                 &ranges,
-                |_, theme| theme.colors().editor_document_highlight_read_background,
+                |theme| theme.colors().editor_document_highlight_read_background,
                 cx,
             );
         }
@@ -282,12 +282,12 @@ impl Vim {
     /// Pastes the clipboard contents, replacing the same number of characters
     /// as the clipboard's contents.
     pub fn paste_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let clipboard_text = cx.read_from_clipboard().and_then(|item| {
-            item.entries().iter().find_map(|entry| match entry {
-                ClipboardEntry::String(text) => Some(text.text().to_string()),
-                _ => None,
-            })
-        });
+        let clipboard_text =
+            cx.read_from_clipboard()
+                .and_then(|item| match item.entries().first() {
+                    Some(ClipboardEntry::String(text)) => Some(text.text().to_string()),
+                    _ => None,
+                });
 
         if let Some(text) = clipboard_text {
             self.push_operator(Operator::Replace, window, cx);

@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use workspace::{AppState, OpenResult, OpenVisible, Workspace};
+use workspace::{AppState, OpenVisible, Workspace};
 
 actions!(
     journal,
@@ -107,10 +107,7 @@ pub fn new_journal_entry(workspace: &Workspace, window: &mut Window, cx: &mut Ap
         .spawn(cx, async move |cx| {
             let (journal_dir, entry_path) = create_entry.await?;
             let opened = if open_new_workspace {
-                let OpenResult {
-                    window: new_workspace,
-                    ..
-                } = cx
+                let (new_workspace, _) = cx
                     .update(|_window, cx| {
                         workspace::open_paths(
                             &[journal_dir],
@@ -121,20 +118,17 @@ pub fn new_journal_entry(workspace: &Workspace, window: &mut Window, cx: &mut Ap
                     })?
                     .await?;
                 new_workspace
-                    .update(cx, |multi_workspace, window, cx| {
-                        let workspace = multi_workspace.workspace().clone();
-                        workspace.update(cx, |workspace, cx| {
-                            workspace.open_paths(
-                                vec![entry_path],
-                                workspace::OpenOptions {
-                                    visible: Some(OpenVisible::All),
-                                    ..Default::default()
-                                },
-                                None,
-                                window,
-                                cx,
-                            )
-                        })
+                    .update(cx, |workspace, window, cx| {
+                        workspace.open_paths(
+                            vec![entry_path],
+                            workspace::OpenOptions {
+                                visible: Some(OpenVisible::All),
+                                ..Default::default()
+                            },
+                            None,
+                            window,
+                            cx,
+                        )
                     })?
                     .await
             } else {
@@ -165,7 +159,7 @@ pub fn new_journal_entry(workspace: &Workspace, window: &mut Window, cx: &mut Ap
                         cx,
                         |s| s.select_ranges([len..len]),
                     );
-                    if len.0 > 0 {
+                    if len > 0 {
                         editor.insert("\n\n", window, cx);
                     }
                     editor.insert(&entry_heading, window, cx);

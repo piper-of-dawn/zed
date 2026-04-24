@@ -2,12 +2,10 @@ use crate::{
     ActiveTooltip, AnyView, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId,
     HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Size, TextOverflow,
-    TextRun, TextStyle, TooltipId, TruncateFrom, WhiteSpace, Window, WrappedLine,
-    WrappedLineLayout, register_tooltip_mouse_handlers, set_tooltip_on_window,
+    TextRun, TextStyle, TooltipId, WhiteSpace, Window, WrappedLine, WrappedLineLayout,
+    register_tooltip_mouse_handlers, set_tooltip_on_window,
 };
 use anyhow::Context as _;
-use gpui_util::ResultExt;
-use itertools::Itertools;
 use smallvec::SmallVec;
 use std::{
     borrow::Cow,
@@ -17,6 +15,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+use util::ResultExt;
 
 impl Element for &'static str {
     type RequestLayoutState = TextLayout;
@@ -77,14 +76,6 @@ impl IntoElement for &'static str {
 }
 
 impl IntoElement for String {
-    type Element = SharedString;
-
-    fn into_element(self) -> Self::Element {
-        self.into()
-    }
-}
-
-impl IntoElement for Cow<'static, str> {
     type Element = SharedString;
 
     fn into_element(self) -> Self::Element {
@@ -159,7 +150,6 @@ pub struct StyledText {
     text: SharedString,
     runs: Option<Vec<TextRun>>,
     delayed_highlights: Option<Vec<(Range<usize>, HighlightStyle)>>,
-    delayed_font_family_overrides: Option<Vec<(Range<usize>, SharedString)>>,
     layout: TextLayout,
 }
 
@@ -170,7 +160,6 @@ impl StyledText {
             text: text.into(),
             runs: None,
             delayed_highlights: None,
-            delayed_font_family_overrides: None,
             layout: TextLayout::default(),
         }
     }
@@ -244,61 +233,11 @@ impl StyledText {
         runs
     }
 
-    /// Override the font family for specific byte ranges of the text.
-    ///
-    /// This is resolved lazily at layout time, so the overrides are applied
-    /// on top of the inherited text style from the parent element.
-    /// Can be combined with [`with_highlights`](Self::with_highlights).
-    ///
-    /// The overrides must be sorted by range start and non-overlapping.
-    /// Each override range must fall on character boundaries.
-    pub fn with_font_family_overrides(
-        mut self,
-        overrides: impl IntoIterator<Item = (Range<usize>, SharedString)>,
-    ) -> Self {
-        self.delayed_font_family_overrides = Some(
-            overrides
-                .into_iter()
-                .inspect(|(range, _)| {
-                    debug_assert!(self.text.is_char_boundary(range.start));
-                    debug_assert!(self.text.is_char_boundary(range.end));
-                })
-                .collect(),
-        );
-        self
-    }
-
-    fn apply_font_family_overrides(
-        runs: &mut [TextRun],
-        overrides: &[(Range<usize>, SharedString)],
-    ) {
-        let mut byte_offset = 0;
-        let mut override_idx = 0;
-        for run in runs.iter_mut() {
-            let run_end = byte_offset + run.len;
-            while override_idx < overrides.len() && overrides[override_idx].0.end <= byte_offset {
-                override_idx += 1;
-            }
-            if override_idx < overrides.len() {
-                let (ref range, ref family) = overrides[override_idx];
-                if byte_offset >= range.start && run_end <= range.end {
-                    run.font.family = family.clone();
-                }
-            }
-            byte_offset = run_end;
-        }
-    }
-
     /// Set the text runs for this piece of text.
     pub fn with_runs(mut self, runs: Vec<TextRun>) -> Self {
         let mut text = &**self.text;
         for run in &runs {
-            text = text.get(run.len..).unwrap_or_else(|| {
-                #[cfg(debug_assertions)]
-                panic!("invalid text run. Text: '{text}', run: {run:?}");
-                #[cfg(not(debug_assertions))]
-                panic!("invalid text run");
-            });
+            text = text.get(run.len..).expect("invalid text run");
         }
         assert!(text.is_empty(), "invalid text run");
         self.runs = Some(runs);
@@ -325,18 +264,11 @@ impl Element for StyledText {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let font_family_overrides = self.delayed_font_family_overrides.take();
-        let mut runs = self.runs.take().or_else(|| {
+        let runs = self.runs.take().or_else(|| {
             self.delayed_highlights.take().map(|delayed_highlights| {
                 Self::compute_runs(&self.text, &window.text_style(), delayed_highlights)
             })
         });
-
-        if let Some(ref overrides) = font_family_overrides {
-            let runs =
-                runs.get_or_insert_with(|| vec![window.text_style().to_run(self.text.len())]);
-            Self::apply_font_family_overrides(runs, overrides);
-        }
 
         let layout_id = self.layout.layout(self.text.clone(), runs, window, cx);
         (layout_id, ())
@@ -421,7 +353,7 @@ impl TextLayout {
                     None
                 };
 
-                let (truncate_width, truncation_affix, truncate_from) =
+                let (truncate_width, truncation_suffix) =
                     if let Some(text_overflow) = text_style.text_overflow.clone() {
                         let width = known_dimensions.width.or(match available_space.width {
                             crate::AvailableSpace::Definite(x) => match text_style.line_clamp {
@@ -432,24 +364,17 @@ impl TextLayout {
                         });
 
                         match text_overflow {
-                            TextOverflow::Truncate(s) => (width, s, TruncateFrom::End),
-                            TextOverflow::TruncateStart(s) => (width, s, TruncateFrom::Start),
+                            TextOverflow::Truncate(s) => (width, s),
                         }
                     } else {
-                        (None, "".into(), TruncateFrom::End)
+                        (None, "".into())
                     };
 
-                // Only use cached layout if:
-                // 1. We have a cached size
-                // 2. wrap_width matches (or both are None)
-                // 3. truncate_width is None (if truncate_width is Some, we need to re-layout
-                //    because the previous layout may have been computed without truncation)
                 if let Some(text_layout) = element_state.0.borrow().as_ref()
-                    && let Some(size) = text_layout.size
+                    && text_layout.size.is_some()
                     && (wrap_width.is_none() || wrap_width == text_layout.wrap_width)
-                    && truncate_width.is_none()
                 {
-                    return size;
+                    return text_layout.size.unwrap();
                 }
 
                 let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
@@ -457,9 +382,8 @@ impl TextLayout {
                     line_wrapper.truncate_line(
                         text.clone(),
                         truncate_width,
-                        &truncation_affix,
+                        &truncation_suffix,
                         &runs,
-                        truncate_from,
                     )
                 } else {
                     (text.clone(), Cow::Borrowed(&*runs))
@@ -673,14 +597,14 @@ impl TextLayout {
             .unwrap()
             .lines
             .iter()
-            .map(|s| &s.text)
+            .map(|s| s.text.to_string())
+            .collect::<Vec<_>>()
             .join("\n")
     }
 
     /// The text for this layout (with soft-wraps as newlines)
     pub fn wrapped_text(&self) -> String {
-        let mut accumulator = String::new();
-
+        let mut lines = Vec::new();
         for wrapped in self.0.borrow().as_ref().unwrap().lines.iter() {
             let mut seen = 0;
             for boundary in wrapped.layout.wrap_boundaries.iter() {
@@ -688,16 +612,13 @@ impl TextLayout {
                     [boundary.glyph_ix]
                     .index;
 
-                accumulator.push_str(&wrapped.text[seen..index]);
-                accumulator.push('\n');
+                lines.push(wrapped.text[seen..index].to_string());
                 seen = index;
             }
-            accumulator.push_str(&wrapped.text[seen..]);
-            accumulator.push('\n');
+            lines.push(wrapped.text[seen..].to_string());
         }
-        // Remove trailing newline
-        accumulator.pop();
-        accumulator
+
+        lines.join("\n")
     }
 }
 
@@ -989,19 +910,5 @@ impl IntoElement for InteractiveText {
 
     fn into_element(self) -> Self::Element {
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_into_element_for() {
-        use crate::{ParentElement as _, SharedString, div};
-        use std::borrow::Cow;
-
-        let _ = div().child("static str");
-        let _ = div().child("String".to_string());
-        let _ = div().child(Cow::Borrowed("Cow"));
-        let _ = div().child(SharedString::from("SharedString"));
     }
 }

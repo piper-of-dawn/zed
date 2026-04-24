@@ -1,40 +1,33 @@
----
-title: AI Code Editor Documentation - Zed
-description: Docs for AI in Zed, the open-source AI code editor. Agentic coding, inline edits, AI code completion, and multi-model support.
----
-
 # AI
 
-Zed is an open-source AI code editor. AI runs throughout the editing experience: agents that read and write your code, inline transformations, code completions on every keystroke, and conversations with models in any buffer.
+Learn how to get started using AI with Zed and all its capabilities.
 
-## How Zed approaches AI
+## Setting up AI in Zed
 
-Zed's AI features run inside a native, GPU-accelerated application built in Rust. There is no Electron layer between you and the model output.
+- [Configuration](./configuration.md): Learn how to set up different language model providers like Anthropic, OpenAI, Ollama, Google AI, and more.
 
-- **Open source.** The editor and all AI features are [open source](https://github.com/zed-industries/zed). You can read how AI is implemented, how data flows to providers, and how tool calls execute.
-- **Multi-model.** Use Zed's hosted models or [bring your own API keys](./llm-providers.md) from Anthropic, OpenAI, Google, Ollama, and 8+ other providers. Run local models, connect to cloud APIs, or mix both. Switch models per task.
-- **External agents.** Run Claude Agent, Gemini CLI, Codex, and other CLI-based agents directly in Zed through the [Agent Client Protocol](https://zed.dev/acp). See [External Agents](./external-agents.md).
-- **Privacy by default.** AI data sharing is opt-in. When you use your own API keys, Zed maintains zero-data retention agreements with providers. See [Privacy and Security](./privacy-and-security.md).
+- [External Agents](./external-agents.md): Learn how to plug in your favorite agent into Zed.
 
-## Agentic editing
+- [Subscription](./subscription.md): Learn about Zed's hosted models and other billing-related information.
 
-The [Agent Panel](./agent-panel.md) is where you work with AI agents. Agents can read files, edit code, run terminal commands, search the web, and access diagnostics through [built-in tools](./tools.md).
+- [Privacy and Security](./privacy-and-security.md): Understand how Zed handles privacy and security with AI features.
 
-You can extend agents with additional tools through [MCP servers](./mcp.md), control what they can access with [tool permissions](./tool-permissions.md), and shape their behavior with [rules](./rules.md).
+## Agentic Editing
 
-The [Inline Assistant](./inline-assistant.md) works differently: select code or a terminal command, describe what you want, and the model rewrites the selection in place. It works with multiple cursors.
+- [Agent Panel](./agent-panel.md): Create and manage interactions with LLM agents.
 
-## Code completions
+- [Rules](./rules.md): How to define rules for AI interactions.
 
-[Edit Prediction](./edit-prediction.md) provides AI code completions on every keystroke. Each keypress sends a request to the prediction provider, which returns single or multi-line suggestions you accept with `tab`.
+- [Tools](./tools.md): Explore the tools that power Zed's built-in agent.
 
-The default provider is Zeta, Zed's open-source model trained on open data. You can also use GitHub Copilot, or Codestral.
+- [Model Context Protocol](./mcp.md): Learn about how to configure and use MCP servers.
 
-## Getting started
+- [Inline Assistant](./inline-assistant.md): Discover how to use AI to generate inline transformations directly within a file or terminal.
 
-- [Configuration](./configuration.md): Connect to Anthropic, OpenAI, Ollama, Google AI, or other LLM providers.
-- [External Agents](./external-agents.md): Run Claude Agent, Codex, Aider, or other external agents inside Zed.
-- [Subscription](./subscription.md): Zed's hosted models and billing.
-- [Privacy and Security](./privacy-and-security.md): How Zed handles data when using AI features.
+## Edit Prediction
 
-New to Zed? Start with [Getting Started](../getting-started.md), then come back here to set up AI. For a higher-level overview, see [zed.dev/ai](https://zed.dev/ai).
+- [Edit Prediction](./edit-prediction.md): Learn about Zed's AI prediction feature that helps autocomplete your code.
+
+## Text Threads
+
+- [Text Threads](./text-threads.md): Learn about an editor-based interface for interacting with language models.

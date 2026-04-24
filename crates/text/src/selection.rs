@@ -2,15 +2,11 @@ use crate::{Anchor, BufferSnapshot, TextDimension};
 use std::cmp::Ordering;
 use std::ops::Range;
 
-#[derive(Default, Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum SelectionGoal {
-    #[default]
     None,
     HorizontalPosition(f64),
-    HorizontalRange {
-        start: f64,
-        end: f64,
-    },
+    HorizontalRange { start: f64, end: f64 },
     WrappedHorizontalPosition((u32, f32)),
 }
 
@@ -21,6 +17,12 @@ pub struct Selection<T> {
     pub end: T,
     pub reversed: bool,
     pub goal: SelectionGoal,
+}
+
+impl Default for SelectionGoal {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 impl<T: Clone> Selection<T> {
@@ -130,15 +132,9 @@ impl<T: Copy> Selection<T> {
     }
 }
 
-impl<T: std::ops::Sub + Copy> Selection<T> {
-    pub fn len(&self) -> <T as std::ops::Sub>::Output {
-        self.end - self.start
-    }
-}
-
-impl<T: Copy + Eq> Selection<T> {
+impl Selection<usize> {
     #[cfg(feature = "test-support")]
-    pub fn from_offset(offset: T) -> Self {
+    pub fn from_offset(offset: usize) -> Self {
         Selection {
             id: 0,
             start: offset,
@@ -148,7 +144,7 @@ impl<T: Copy + Eq> Selection<T> {
         }
     }
 
-    pub fn equals(&self, offset_range: &Range<T>) -> bool {
+    pub fn equals(&self, offset_range: &Range<usize>) -> bool {
         self.start == offset_range.start && self.end == offset_range.end
     }
 }

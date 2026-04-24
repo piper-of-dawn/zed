@@ -77,7 +77,9 @@ impl Render for ImageInfo {
             .to_string(),
         );
 
-        div().child(Label::new(components.join(" • ")).size(LabelSize::Small))
+        div().child(
+            Button::new("image-metadata", components.join(" • ")).label_size(LabelSize::Small),
+        )
     }
 }
 

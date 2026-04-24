@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use editor::{Editor, MultiBufferOffset};
+use editor::Editor;
 use gpui::{
     Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Subscription, Task,
     WeakEntity, Window,
@@ -28,7 +28,7 @@ pub struct DiagnosticIndicator {
 
 impl Render for DiagnosticIndicator {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let indicator = h_flex().gap_2().min_w_0().overflow_x_hidden();
+        let indicator = h_flex().gap_2();
         if !ProjectSettings::get_global(cx).diagnostics.button {
             return indicator.hidden();
         }
@@ -67,7 +67,6 @@ impl Render for DiagnosticIndicator {
             Some(
                 Button::new("diagnostic_message", SharedString::new(message))
                     .label_size(LabelSize::Small)
-                    .truncate(true)
                     .tooltip(|_window, cx| {
                         Tooltip::for_action(
                             "Next Diagnostic",
@@ -172,19 +171,14 @@ impl DiagnosticIndicator {
             let buffer = editor.buffer().read(cx).snapshot(cx);
             let cursor_position = editor
                 .selections
-                .newest::<MultiBufferOffset>(&editor.display_snapshot(cx))
+                .newest::<usize>(&editor.display_snapshot(cx))
                 .head();
             (buffer, cursor_position)
         });
         let new_diagnostic = buffer
-            .diagnostics_in_range::<MultiBufferOffset>(cursor_position..cursor_position)
+            .diagnostics_in_range::<usize>(cursor_position..cursor_position)
             .filter(|entry| !entry.range.is_empty())
-            .min_by_key(|entry| {
-                (
-                    entry.diagnostic.severity,
-                    entry.range.end - entry.range.start,
-                )
-            })
+            .min_by_key(|entry| (entry.diagnostic.severity, entry.range.len()))
             .map(|entry| entry.diagnostic);
         if new_diagnostic != self.current_diagnostic.as_ref() {
             let new_diagnostic = new_diagnostic.cloned();

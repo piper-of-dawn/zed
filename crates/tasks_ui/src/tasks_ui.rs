@@ -204,19 +204,19 @@ where
                 else {
                     return Task::ready(Vec::new());
                 };
-                let (language, buffer) = task_contexts
+                let (file, language) = task_contexts
                     .location()
                     .map(|location| {
-                        let buffer = location.buffer.clone();
+                        let buffer = location.buffer.read(cx);
                         (
-                            buffer.read(cx).language_at(location.range.start),
-                            Some(buffer),
+                            buffer.file().cloned(),
+                            buffer.language_at(location.range.start),
                         )
                     })
                     .unwrap_or_default();
                 task_inventory
                     .read(cx)
-                    .list_tasks(buffer, language, task_contexts.worktree(), cx)
+                    .list_tasks(file, language, task_contexts.worktree(), cx)
             })?
             .await;
 
@@ -316,16 +316,16 @@ pub fn task_contexts(
 
     let lsp_task_sources = active_editor
         .as_ref()
-        .map(|active_editor| {
-            active_editor.update(cx, |editor, cx| editor.lsp_task_sources(false, false, cx))
-        })
+        .map(|active_editor| active_editor.update(cx, |editor, cx| editor.lsp_task_sources(cx)))
         .unwrap_or_default();
 
-    let latest_selection = active_editor.as_ref().and_then(|active_editor| {
-        let snapshot = active_editor.read(cx).buffer().read(cx).snapshot(cx);
-        snapshot
-            .anchor_to_buffer_anchor(active_editor.read(cx).selections.newest_anchor().head())
-            .map(|(anchor, _)| anchor)
+    let latest_selection = active_editor.as_ref().map(|active_editor| {
+        active_editor
+            .read(cx)
+            .selections
+            .newest_anchor()
+            .head()
+            .text_anchor
     });
 
     let mut worktree_abs_paths = workspace
@@ -392,7 +392,7 @@ fn worktree_context(worktree_abs_path: &Path) -> TaskContext {
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use editor::{Editor, MultiBufferOffset, SelectionEffects};
+    use editor::{Editor, SelectionEffects};
     use gpui::TestAppContext;
     use language::{Language, LanguageConfig};
     use project::{BasicContextProvider, FakeFs, Project, task_store::TaskStore};
@@ -400,7 +400,7 @@ mod tests {
     use task::{TaskContext, TaskVariables, VariableName};
     use ui::VisualContext;
     use util::{path, rel_path::rel_path};
-    use workspace::{AppState, MultiWorkspace};
+    use workspace::{AppState, Workspace};
 
     use crate::task_contexts;
 
@@ -434,15 +434,10 @@ mod tests {
         )
         .await;
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (worktree_store, git_store) = project.read_with(cx, |project, _| {
-            (project.worktree_store(), project.git_store().clone())
-        });
+        let worktree_store = project.read_with(cx, |project, _| project.worktree_store());
         let rust_language = Arc::new(
             Language::new(
-                LanguageConfig {
-                    name: "Rust".into(),
-                    ..Default::default()
-                },
+                LanguageConfig::default(),
                 Some(tree_sitter_rust::LANGUAGE.into()),
             )
             .with_outline_query(
@@ -453,16 +448,12 @@ mod tests {
             .unwrap()
             .with_context_provider(Some(Arc::new(BasicContextProvider::new(
                 worktree_store.clone(),
-                git_store.clone(),
             )))),
         );
 
         let typescript_language = Arc::new(
             Language::new(
-                LanguageConfig {
-                    name: "TypeScript".into(),
-                    ..Default::default()
-                },
+                LanguageConfig::default(),
                 Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
             )
             .with_outline_query(
@@ -477,16 +468,14 @@ mod tests {
             .unwrap()
             .with_context_provider(Some(Arc::new(BasicContextProvider::new(
                 worktree_store.clone(),
-                git_store.clone(),
             )))),
         );
 
         let worktree_id = project.update(cx, |project, cx| {
             project.worktrees(cx).next().unwrap().read(cx).id()
         });
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
 
         let buffer1 = workspace
             .update(cx, |this, cx| {
@@ -542,7 +531,6 @@ mod tests {
                     (VariableName::WorktreeRoot, path!("/dir").into()),
                     (VariableName::Row, "1".into()),
                     (VariableName::Column, "1".into()),
-                    (VariableName::Language, "Rust".into()),
                 ]),
                 project_env: HashMap::default(),
             }
@@ -551,7 +539,7 @@ mod tests {
         // And now, let's select an identifier.
         editor2.update_in(cx, |editor, window, cx| {
             editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
-                selections.select_ranges([MultiBufferOffset(14)..MultiBufferOffset(18)])
+                selections.select_ranges([14..18])
             })
         });
 
@@ -577,7 +565,6 @@ mod tests {
                     (VariableName::Column, "15".into()),
                     (VariableName::SelectedText, "is_i".into()),
                     (VariableName::Symbol, "this_is_a_rust_file".into()),
-                    (VariableName::Language, "Rust".into()),
                 ]),
                 project_env: HashMap::default(),
             }
@@ -606,7 +593,6 @@ mod tests {
                     (VariableName::Row, "1".into()),
                     (VariableName::Column, "1".into()),
                     (VariableName::Symbol, "this_is_a_test".into()),
-                    (VariableName::Language, "TypeScript".into()),
                 ]),
                 project_env: HashMap::default(),
             }

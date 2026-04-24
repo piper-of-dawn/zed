@@ -14,10 +14,11 @@ use theme::Appearance;
 /// use gpui::{App, Hsla, KeybindingKeystroke, Keystroke};
 /// use ui::prelude::*;
 /// use ui::{KeyBinding, KeybindingHint};
+/// use settings::KeybindSource;
 ///
 /// # fn example(cx: &App) {
 /// let hint = KeybindingHint::new(
-///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-s").unwrap())].into(), false),
+///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-s").unwrap())].into(), KeybindSource::Base),
 ///     Hsla::black()
 /// )
 ///     .prefix("Save:")
@@ -45,10 +46,11 @@ impl KeybindingHint {
     /// use gpui::{App, Hsla, KeybindingKeystroke, Keystroke};
     /// use ui::prelude::*;
     /// use ui::{KeyBinding, KeybindingHint};
+    /// use settings::KeybindSource;
     ///
     /// # fn example(cx: &App) {
     /// let hint = KeybindingHint::new(
-    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-c").unwrap())].into(), false),
+    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-c").unwrap())].into(), KeybindSource::Base),
     ///     Hsla::black()
     /// );
     /// # }
@@ -74,11 +76,12 @@ impl KeybindingHint {
     /// use gpui::{App, Hsla, KeybindingKeystroke, Keystroke};
     /// use ui::prelude::*;
     /// use ui::{KeyBinding, KeybindingHint};
+    /// use settings::KeybindSource;
     ///
     /// # fn example(cx: &App) {
     /// let hint = KeybindingHint::with_prefix(
     ///     "Copy:",
-    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-c").unwrap())].into(), false),
+    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-c").unwrap())].into(), KeybindSource::Base),
     ///     Hsla::black()
     /// );
     /// # }
@@ -108,10 +111,11 @@ impl KeybindingHint {
     /// use gpui::{App, Hsla, KeybindingKeystroke, Keystroke};
     /// use ui::prelude::*;
     /// use ui::{KeyBinding, KeybindingHint};
+    /// use settings::KeybindSource;
     ///
     /// # fn example(cx: &App) {
     /// let hint = KeybindingHint::with_suffix(
-    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-v").unwrap())].into(), false),
+    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-v").unwrap())].into(), KeybindSource::Base),
     ///     "Paste",
     ///     Hsla::black()
     /// );
@@ -141,10 +145,11 @@ impl KeybindingHint {
     /// use gpui::{App, Hsla, KeybindingKeystroke, Keystroke};
     /// use ui::prelude::*;
     /// use ui::{KeyBinding, KeybindingHint};
+    /// use settings::KeybindSource;
     ///
     /// # fn example(cx: &App) {
     /// let hint = KeybindingHint::new(
-    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-x").unwrap())].into(), false),
+    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-x").unwrap())].into(), KeybindSource::Base),
     ///     Hsla::black()
     /// )
     ///     .prefix("Cut:");
@@ -165,10 +170,11 @@ impl KeybindingHint {
     /// use gpui::{App, Hsla, KeybindingKeystroke, Keystroke};
     /// use ui::prelude::*;
     /// use ui::{KeyBinding, KeybindingHint};
+    /// use settings::KeybindSource;
     ///
     /// # fn example(cx: &App) {
     /// let hint = KeybindingHint::new(
-    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-f").unwrap())].into(), false),
+    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-f").unwrap())].into(), KeybindSource::Base),
     ///     Hsla::black()
     /// )
     ///     .suffix("Find");
@@ -189,10 +195,11 @@ impl KeybindingHint {
     /// use gpui::{App, Hsla, KeybindingKeystroke, Keystroke};
     /// use ui::prelude::*;
     /// use ui::{KeyBinding, KeybindingHint};
+    /// use settings::KeybindSource;
     ///
     /// # fn example(cx: &App) {
     /// let hint = KeybindingHint::new(
-    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-z").unwrap())].into(), false),
+    ///     KeyBinding::from_keystrokes(vec![KeybindingKeystroke::from_keystroke(Keystroke::parse("ctrl-z").unwrap())].into(), KeybindSource::Base),
     ///     Hsla::black()
     /// )
     ///     .size(Pixels::from(16.0));
@@ -227,7 +234,9 @@ impl RenderOnce for KeybindingHint {
 
         let mut base = h_flex();
 
-        base.text_style().font_style = Some(FontStyle::Italic);
+        base.text_style()
+            .get_or_insert_with(Default::default)
+            .font_style = Some(FontStyle::Italic);
 
         base.gap_1()
             .font_buffer(cx)

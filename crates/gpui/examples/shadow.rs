@@ -1,10 +1,7 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
 use gpui::{
-    App, Bounds, BoxShadow, Context, Div, SharedString, Window, WindowBounds, WindowOptions, div,
-    hsla, point, prelude::*, px, relative, rgb, size,
+    App, Application, Bounds, BoxShadow, Context, Div, SharedString, Window, WindowBounds,
+    WindowOptions, div, hsla, point, prelude::*, px, relative, rgb, size,
 };
-use gpui_platform::application;
 
 struct Shadow {}
 
@@ -571,8 +568,8 @@ impl Render for Shadow {
     }
 }
 
-fn run_example() {
-    application().run(|cx: &mut App| {
+fn main() {
+    Application::new().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1000.0), px(800.0)), cx);
         cx.open_window(
             WindowOptions {
@@ -585,16 +582,4 @@ fn run_example() {
 
         cx.activate(true);
     });
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
-    run_example();
 }

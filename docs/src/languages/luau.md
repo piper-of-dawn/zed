@@ -1,8 +1,3 @@
----
-title: Luau
-description: "Configure Luau language support in Zed, including language servers, formatting, and debugging."
----
-
 # Luau
 
 [Luau](https://luau.org/) is a fast, small, safe, gradually typed, embeddable scripting language derived from Lua. Luau was developed by Roblox and is available under the MIT license.
@@ -30,7 +25,7 @@ brew install stylua
 cargo install stylua --features lua52,lua53,lua54,luau
 ```
 
-Configure formatting in Settings ({#kb zed::OpenSettings}) under Languages > Luau, or add to your settings file:
+Then add the following to your Zed `settings.json`:
 
 ```json [settings]
   "languages": {

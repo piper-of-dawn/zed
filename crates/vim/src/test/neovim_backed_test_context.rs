@@ -31,7 +31,6 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    /// Assert that both Zed and NeoVim have the same content and mode.
     #[track_caller]
     pub fn assert_matches(&self) {
         if self.neovim != self.editor || self.neovim_mode != self.editor_mode {
@@ -184,26 +183,6 @@ impl NeovimBackedTestContext {
         }
     }
 
-    pub async fn new_markdown_with_rust(cx: &mut gpui::TestAppContext) -> NeovimBackedTestContext {
-        #[cfg(feature = "neovim")]
-        cx.executor().allow_parking();
-        let thread = thread::current();
-        let test_name = thread
-            .name()
-            .expect("thread is not named")
-            .split(':')
-            .next_back()
-            .unwrap()
-            .to_string();
-        Self {
-            cx: VimTestContext::new_markdown_with_rust(cx).await,
-            neovim: NeovimConnection::new(test_name).await,
-
-            last_set_state: None,
-            recent_keystrokes: Default::default(),
-        }
-    }
-
     pub async fn new_typescript(cx: &mut gpui::TestAppContext) -> NeovimBackedTestContext {
         #[cfg(feature = "neovim")]
         cx.executor().allow_parking();
@@ -304,10 +283,11 @@ impl NeovimBackedTestContext {
         self.neovim.set_option(&format!("scrolloff={}", 3)).await;
         // +2 to account for the vim command UI at the bottom.
         self.neovim.set_option(&format!("lines={}", rows + 2)).await;
-        let (line_height, visible_line_count) = self.update_editor(|editor, window, cx| {
+        let (line_height, visible_line_count) = self.editor(|editor, window, _cx| {
             (
                 editor
-                    .style(cx)
+                    .style()
+                    .unwrap()
                     .text
                     .line_height_in_pixels(window.rem_size()),
                 editor.visible_line_count().unwrap(),

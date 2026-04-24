@@ -10,10 +10,7 @@ use db::{
 };
 use fs::MTime;
 use itertools::Itertools as _;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::PathBuf;
 
 use workspace::{ItemId, WorkspaceDb, WorkspaceId};
 
@@ -123,8 +120,6 @@ impl Domain for EditorDb {
     //   workspace_id: usize,
     //   start: usize,
     //   end: usize,
-    //   start_fingerprint: Option<String>,
-    //   end_fingerprint: Option<String>,
     // )
 
     const MIGRATIONS: &[&str] = &[
@@ -202,31 +197,10 @@ impl Domain for EditorDb {
                 ON DELETE CASCADE
             ) STRICT;
         ),
-        sql! (
-            ALTER TABLE editor_folds ADD COLUMN start_fingerprint TEXT;
-            ALTER TABLE editor_folds ADD COLUMN end_fingerprint TEXT;
-        ),
-        // File-level fold persistence: store folds by file path instead of editor_id.
-        // This allows folds to survive tab close and workspace cleanup.
-        // Follows the breakpoints pattern in workspace/src/persistence.rs.
-        sql! (
-            CREATE TABLE file_folds (
-                workspace_id INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                start INTEGER NOT NULL,
-                end INTEGER NOT NULL,
-                start_fingerprint TEXT,
-                end_fingerprint TEXT,
-                FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id)
-                    ON DELETE CASCADE
-                    ON UPDATE CASCADE,
-                PRIMARY KEY(workspace_id, path, start)
-            );
-        ),
     ];
 }
 
-db::static_connection!(EditorDb, [WorkspaceDb]);
+db::static_connection!(DB, EditorDb, [WorkspaceDb]);
 
 // https://www.sqlite.org/limits.html
 // > <..> the maximum value of a host parameter number is SQLITE_MAX_VARIABLE_NUMBER,
@@ -300,22 +274,10 @@ impl EditorDb {
         pub fn get_editor_folds(
             editor_id: ItemId,
             workspace_id: WorkspaceId
-        ) -> Result<Vec<(usize, usize, Option<String>, Option<String>)>> {
-            SELECT start, end, start_fingerprint, end_fingerprint
+        ) -> Result<Vec<(usize, usize)>> {
+            SELECT start, end
             FROM editor_folds
             WHERE editor_id = ?1 AND workspace_id = ?2
-        }
-    }
-
-    query! {
-        pub fn get_file_folds(
-            workspace_id: WorkspaceId,
-            path: &Path
-        ) -> Result<Vec<(usize, usize, Option<String>, Option<String>)>> {
-            SELECT start, end, start_fingerprint, end_fingerprint
-            FROM file_folds
-            WHERE workspace_id = ?1 AND path = ?2
-            ORDER BY start
         }
     }
 
@@ -371,42 +333,56 @@ VALUES {placeholders};
         Ok(())
     }
 
-    pub async fn save_file_folds(
+    pub async fn save_editor_folds(
         &self,
+        editor_id: ItemId,
         workspace_id: WorkspaceId,
-        path: Arc<Path>,
-        folds: Vec<(usize, usize, String, String)>,
+        folds: Vec<(usize, usize)>,
     ) -> Result<()> {
-        log::debug!("Saving folds for file {path:?} in workspace {workspace_id:?}");
-        self.write(move |conn| {
-            // Clear existing folds for this file
-            conn.exec_bound(sql!(
-                DELETE FROM file_folds WHERE workspace_id = ?1 AND path = ?2;
-            ))?((workspace_id, path.as_ref()))?;
+        log::debug!("Saving folds for editor {editor_id} in workspace {workspace_id:?}");
+        let mut first_fold;
+        let mut last_fold = 0_usize;
+        for (count, placeholders) in std::iter::once("(?1, ?2, ?, ?)")
+            .cycle()
+            .take(folds.len())
+            .chunks(MAX_QUERY_PLACEHOLDERS / 4)
+            .into_iter()
+            .map(|chunk| {
+                let mut count = 0;
+                let placeholders = chunk
+                    .inspect(|_| {
+                        count += 1;
+                    })
+                    .join(", ");
+                (count, placeholders)
+            })
+            .collect::<Vec<_>>()
+        {
+            first_fold = last_fold;
+            last_fold = last_fold + count;
+            let query = format!(
+                r#"
+DELETE FROM editor_folds WHERE editor_id = ?1 AND workspace_id = ?2;
 
-            // Insert each fold (matches breakpoints pattern)
-            for (start, end, start_fp, end_fp) in folds {
-                conn.exec_bound(sql!(
-                    INSERT INTO file_folds (workspace_id, path, start, end, start_fingerprint, end_fingerprint)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6);
-                ))?((workspace_id, path.as_ref(), start, end, start_fp, end_fp))?;
-            }
-            Ok(())
-        })
-        .await
-    }
+INSERT OR IGNORE INTO editor_folds (editor_id, workspace_id, start, end)
+VALUES {placeholders};
+"#
+            );
 
-    pub async fn delete_file_folds(
-        &self,
-        workspace_id: WorkspaceId,
-        path: Arc<Path>,
-    ) -> Result<()> {
-        self.write(move |conn| {
-            conn.exec_bound(sql!(
-                DELETE FROM file_folds WHERE workspace_id = ?1 AND path = ?2;
-            ))?((workspace_id, path.as_ref()))
-        })
-        .await
+            let folds = folds[first_fold..last_fold].to_vec();
+            self.write(move |conn| {
+                let mut statement = Statement::prepare(conn, query)?;
+                statement.bind(&editor_id, 1)?;
+                let mut next_index = statement.bind(&workspace_id, 2)?;
+                for (start, end) in folds {
+                    next_index = statement.bind(&start, next_index)?;
+                    next_index = statement.bind(&end, next_index)?;
+                }
+                statement.exec()
+            })
+            .await?;
+        }
+        Ok(())
     }
 }
 
@@ -415,10 +391,8 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    async fn test_save_and_get_serialized_editor(cx: &mut gpui::TestAppContext) {
-        let db = cx.update(|cx| workspace::WorkspaceDb::global(cx));
-        let workspace_id = db.next_id().await.unwrap();
-        let editor_db = cx.update(|cx| EditorDb::global(cx));
+    async fn test_save_and_get_serialized_editor() {
+        let workspace_id = workspace::WORKSPACE_DB.next_id().await.unwrap();
 
         let serialized_editor = SerializedEditor {
             abs_path: Some(PathBuf::from("testing.txt")),
@@ -427,12 +401,11 @@ mod tests {
             mtime: None,
         };
 
-        editor_db
-            .save_serialized_editor(1234, workspace_id, serialized_editor.clone())
+        DB.save_serialized_editor(1234, workspace_id, serialized_editor.clone())
             .await
             .unwrap();
 
-        let have = editor_db
+        let have = DB
             .get_serialized_editor(1234, workspace_id)
             .unwrap()
             .unwrap();
@@ -446,12 +419,11 @@ mod tests {
             mtime: None,
         };
 
-        editor_db
-            .save_serialized_editor(1234, workspace_id, serialized_editor.clone())
+        DB.save_serialized_editor(1234, workspace_id, serialized_editor.clone())
             .await
             .unwrap();
 
-        let have = editor_db
+        let have = DB
             .get_serialized_editor(1234, workspace_id)
             .unwrap()
             .unwrap();
@@ -465,12 +437,11 @@ mod tests {
             mtime: None,
         };
 
-        editor_db
-            .save_serialized_editor(1234, workspace_id, serialized_editor.clone())
+        DB.save_serialized_editor(1234, workspace_id, serialized_editor.clone())
             .await
             .unwrap();
 
-        let have = editor_db
+        let have = DB
             .get_serialized_editor(1234, workspace_id)
             .unwrap()
             .unwrap();
@@ -484,134 +455,14 @@ mod tests {
             mtime: Some(MTime::from_seconds_and_nanos(100, 42)),
         };
 
-        editor_db
-            .save_serialized_editor(1234, workspace_id, serialized_editor.clone())
+        DB.save_serialized_editor(1234, workspace_id, serialized_editor.clone())
             .await
             .unwrap();
 
-        let have = editor_db
+        let have = DB
             .get_serialized_editor(1234, workspace_id)
             .unwrap()
             .unwrap();
         assert_eq!(have, serialized_editor);
-    }
-
-    // NOTE: The fingerprint search logic (finding content at new offsets when file
-    // is modified externally) is in editor.rs:restore_from_db and requires a full
-    // Editor context to test. Manual testing procedure:
-    // 1. Open a file, fold some sections, close Zed
-    // 2. Add text at the START of the file externally (shifts all offsets)
-    // 3. Reopen Zed - folds should be restored at their NEW correct positions
-    // The search uses contains_str_at() to find fingerprints in the buffer.
-
-    #[gpui::test]
-    async fn test_save_and_get_file_folds(cx: &mut gpui::TestAppContext) {
-        let db = cx.update(|cx| workspace::WorkspaceDb::global(cx));
-        let workspace_id = db.next_id().await.unwrap();
-        let editor_db = cx.update(|cx| EditorDb::global(cx));
-
-        // file_folds table uses path as key (no FK to editors table)
-        let file_path: Arc<Path> = Arc::from(Path::new("/tmp/test_file_folds.rs"));
-
-        // Save folds with fingerprints
-        let folds = vec![
-            (
-                100,
-                200,
-                "fn main() {".to_string(),
-                "} // end main".to_string(),
-            ),
-            (
-                300,
-                400,
-                "struct Foo {".to_string(),
-                "} // end Foo".to_string(),
-            ),
-        ];
-        editor_db
-            .save_file_folds(workspace_id, file_path.clone(), folds.clone())
-            .await
-            .unwrap();
-
-        // Retrieve and verify fingerprints are preserved
-        let retrieved = editor_db.get_file_folds(workspace_id, &file_path).unwrap();
-        assert_eq!(retrieved.len(), 2);
-        assert_eq!(
-            retrieved[0],
-            (
-                100,
-                200,
-                Some("fn main() {".to_string()),
-                Some("} // end main".to_string())
-            )
-        );
-        assert_eq!(
-            retrieved[1],
-            (
-                300,
-                400,
-                Some("struct Foo {".to_string()),
-                Some("} // end Foo".to_string())
-            )
-        );
-
-        // Test overwrite: saving new folds replaces old ones
-        let new_folds = vec![(
-            500,
-            600,
-            "impl Bar {".to_string(),
-            "} // end impl".to_string(),
-        )];
-        editor_db
-            .save_file_folds(workspace_id, file_path.clone(), new_folds)
-            .await
-            .unwrap();
-
-        let retrieved = editor_db.get_file_folds(workspace_id, &file_path).unwrap();
-        assert_eq!(retrieved.len(), 1);
-        assert_eq!(
-            retrieved[0],
-            (
-                500,
-                600,
-                Some("impl Bar {".to_string()),
-                Some("} // end impl".to_string())
-            )
-        );
-
-        // Test delete
-        editor_db
-            .delete_file_folds(workspace_id, file_path.clone())
-            .await
-            .unwrap();
-        let retrieved = editor_db.get_file_folds(workspace_id, &file_path).unwrap();
-        assert!(retrieved.is_empty());
-
-        // Test multiple files don't interfere
-        let file_path_a: Arc<Path> = Arc::from(Path::new("/tmp/file_a.rs"));
-        let file_path_b: Arc<Path> = Arc::from(Path::new("/tmp/file_b.rs"));
-        let folds_a = vec![(10, 20, "a_start".to_string(), "a_end".to_string())];
-        let folds_b = vec![(30, 40, "b_start".to_string(), "b_end".to_string())];
-
-        editor_db
-            .save_file_folds(workspace_id, file_path_a.clone(), folds_a)
-            .await
-            .unwrap();
-        editor_db
-            .save_file_folds(workspace_id, file_path_b.clone(), folds_b)
-            .await
-            .unwrap();
-
-        let retrieved_a = editor_db
-            .get_file_folds(workspace_id, &file_path_a)
-            .unwrap();
-        let retrieved_b = editor_db
-            .get_file_folds(workspace_id, &file_path_b)
-            .unwrap();
-
-        assert_eq!(retrieved_a.len(), 1);
-        assert_eq!(retrieved_b.len(), 1);
-        assert_eq!(retrieved_a[0].0, 10); // file_a's fold
-        assert_eq!(retrieved_b[0].0, 30); // file_b's fold
     }
 }

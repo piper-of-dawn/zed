@@ -1,8 +1,3 @@
----
-title: Extension Capabilities
-description: "Extension Capabilities for Zed extensions."
----
-
 # Extension Capabilities
 
 The operations that Zed extensions are able to perform are governed by a capability system.
@@ -15,7 +10,7 @@ This is controlled via the `granted_extension_capabilities` setting.
 
 Restricting or removing a capability will cause an error to be returned when an extension attempts to call the corresponding extension API without sufficient capabilities.
 
-For example, to restrict downloads to files from GitHub, set `host` for the `download_file` capability:
+For instance, if you wanted to restrict downloads to just files from GitHub, you could modify `host` for the `download_file` capability:
 
 ```diff
 {
@@ -67,7 +62,7 @@ The `download_file` capability grants extensions the ability to download files u
 To allow any file to be downloaded:
 
 ```toml
-{ kind = "download_file", host = "*", path = ["**"] }
+{ kind = "download_file", host = "github.com", path = ["**"] }
 ```
 
 To allow any file to be downloaded from `github.com`:

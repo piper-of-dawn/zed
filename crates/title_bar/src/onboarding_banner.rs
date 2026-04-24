@@ -1,7 +1,3 @@
-// This module provides infrastructure for showing onboarding banners in the title bar.
-// It's currently not in use but is kept for future feature announcements.
-#![allow(dead_code)]
-
 use gpui::{Action, Entity, Global, Render, SharedString};
 use ui::{ButtonLike, Tooltip, prelude::*};
 use util::ResultExt;
@@ -48,7 +44,7 @@ impl OnboardingBanner {
                 subtitle: subtitle.or(Some(SharedString::from("Introducing:"))),
             },
             visible_when: None,
-            dismissed: get_dismissed(source, cx),
+            dismissed: get_dismissed(source),
         }
     }
 
@@ -79,9 +75,9 @@ fn dismissed_at_key(source: &str) -> String {
     }
 }
 
-fn get_dismissed(source: &str, cx: &App) -> bool {
+fn get_dismissed(source: &str) -> bool {
     let dismissed_at = dismissed_at_key(source);
-    db::kvp::KeyValueStore::global(cx)
+    db::kvp::KEY_VALUE_STORE
         .read_kvp(&dismissed_at)
         .log_err()
         .is_some_and(|dismissed| dismissed.is_some())
@@ -89,30 +85,28 @@ fn get_dismissed(source: &str, cx: &App) -> bool {
 
 fn persist_dismissed(source: &str, cx: &mut App) {
     let dismissed_at = dismissed_at_key(source);
-    let kvp = db::kvp::KeyValueStore::global(cx);
-    cx.spawn(async move |_| {
+    cx.spawn(async |_| {
         let time = chrono::Utc::now().to_rfc3339();
-        kvp.write_kvp(dismissed_at, time).await
+        db::kvp::KEY_VALUE_STORE.write_kvp(dismissed_at, time).await
     })
     .detach_and_log_err(cx);
 }
 
 pub fn restore_banner(cx: &mut App) {
-    if let Some(banner_global) = cx.try_global::<BannerGlobal>() {
-        let entity = banner_global.entity.clone();
-        cx.defer(move |cx| {
-            entity.update(cx, |this, cx| {
+    cx.defer(|cx| {
+        cx.global::<BannerGlobal>()
+            .entity
+            .clone()
+            .update(cx, |this, cx| {
                 this.dismissed = false;
                 cx.notify();
             });
-        });
+    });
 
-        let source = &cx.global::<BannerGlobal>().entity.read(cx).source;
-        let dismissed_at = dismissed_at_key(source);
-        let kvp = db::kvp::KeyValueStore::global(cx);
-        cx.spawn(async move |_| kvp.delete_kvp(dismissed_at).await)
-            .detach_and_log_err(cx);
-    }
+    let source = &cx.global::<BannerGlobal>().entity.read(cx).source;
+    let dismissed_at = dismissed_at_key(source);
+    cx.spawn(async |_| db::kvp::KEY_VALUE_STORE.delete_kvp(dismissed_at).await)
+        .detach_and_log_err(cx);
 }
 
 impl Render for OnboardingBanner {
@@ -126,7 +120,6 @@ impl Render for OnboardingBanner {
             .rounded_sm()
             .border_1()
             .border_color(border_color)
-            .occlude()
             .child(
                 ButtonLike::new("try-a-feature")
                     .child(

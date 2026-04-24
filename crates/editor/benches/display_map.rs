@@ -2,14 +2,14 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use editor::MultiBuffer;
 use gpui::TestDispatcher;
 use itertools::Itertools;
-use multi_buffer::MultiBufferOffset;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::num::NonZeroU32;
 use text::Bias;
 use util::RandomCharIter;
 
 fn to_tab_point_benchmark(c: &mut Criterion) {
-    let dispatcher = TestDispatcher::new(1);
+    let rng = StdRng::seed_from_u64(1);
+    let dispatcher = TestDispatcher::new(rng);
     let cx = gpui::TestAppContext::build(dispatcher, None);
 
     let create_tab_map = |length: usize| {
@@ -24,9 +24,7 @@ fn to_tab_point_benchmark(c: &mut Criterion) {
         let (_, inlay_snapshot) = InlayMap::new(buffer_snapshot);
         let (_, fold_snapshot) = FoldMap::new(inlay_snapshot.clone());
         let fold_point = fold_snapshot.to_fold_point(
-            inlay_snapshot.to_point(InlayOffset(
-                rng.random_range(MultiBufferOffset(0)..MultiBufferOffset(length)),
-            )),
+            inlay_snapshot.to_point(InlayOffset(rng.random_range(0..length))),
             Bias::Left,
         );
         let (_, snapshot) = TabMap::new(fold_snapshot, NonZeroU32::new(4).unwrap());
@@ -44,7 +42,7 @@ fn to_tab_point_benchmark(c: &mut Criterion) {
             &snapshot,
             |bench, snapshot| {
                 bench.iter(|| {
-                    snapshot.fold_point_to_tab_point(fold_point);
+                    snapshot.to_tab_point(fold_point);
                 });
             },
         );
@@ -54,7 +52,8 @@ fn to_tab_point_benchmark(c: &mut Criterion) {
 }
 
 fn to_fold_point_benchmark(c: &mut Criterion) {
-    let dispatcher = TestDispatcher::new(1);
+    let rng = StdRng::seed_from_u64(1);
+    let dispatcher = TestDispatcher::new(rng);
     let cx = gpui::TestAppContext::build(dispatcher, None);
 
     let create_tab_map = |length: usize| {
@@ -70,14 +69,12 @@ fn to_fold_point_benchmark(c: &mut Criterion) {
         let (_, fold_snapshot) = FoldMap::new(inlay_snapshot.clone());
 
         let fold_point = fold_snapshot.to_fold_point(
-            inlay_snapshot.to_point(InlayOffset(
-                rng.random_range(MultiBufferOffset(0)..MultiBufferOffset(length)),
-            )),
+            inlay_snapshot.to_point(InlayOffset(rng.random_range(0..length))),
             Bias::Left,
         );
 
         let (_, snapshot) = TabMap::new(fold_snapshot, NonZeroU32::new(4).unwrap());
-        let tab_point = snapshot.fold_point_to_tab_point(fold_point);
+        let tab_point = snapshot.to_tab_point(fold_point);
 
         (length, snapshot, tab_point)
     };
@@ -92,7 +89,7 @@ fn to_fold_point_benchmark(c: &mut Criterion) {
             &snapshot,
             |bench, snapshot| {
                 bench.iter(|| {
-                    snapshot.tab_point_to_fold_point(tab_point, Bias::Left);
+                    snapshot.to_fold_point(tab_point, Bias::Left);
                 });
             },
         );

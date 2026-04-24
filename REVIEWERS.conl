@@ -12,8 +12,10 @@
   = @ConradIrwin
   = @danilo-leal
   = @dinocosta
+  = @HactarCE
   = @kubkon
   = @maxdeviant
+  = @p1n3appl3
   = @probably-neb
   = @smitbarmase
   = @SomeoneToIgnore
@@ -26,9 +28,10 @@ ai
   = @rtfeldman
 
 audio
-  = @yara-blue
+  = @dvdsk
 
 crashes
+  = @p1n3appl3
   = @Veykril
 
 debugger
@@ -40,9 +43,7 @@ design
   = @danilo-leal
 
 docs
-  = @miguelraz
   = @probably-neb
-  = @yeskunall
 
 extension
   = @kubkon
@@ -50,10 +51,6 @@ extension
 git
   = @cole-miller
   = @danilo-leal
-  = @yara-blue
-  = @kubkon
-  = @Anthony-Eid
-  = @cameron1024
 
 gpui
   = @Anthony-Eid
@@ -73,7 +70,8 @@ languages
 
 linux
   = @cole-miller
-  = @yara-blue
+  = @dvdsk
+  = @p1n3appl3
   = @probably-neb
   = @smitbarmase
 
@@ -88,7 +86,8 @@ multi_buffer
   = @SomeoneToIgnore
 
 pickers
-  = @yara-blue
+  = @dvdsk
+  = @p1n3appl3
   = @SomeoneToIgnore
 
 project_panel
@@ -99,12 +98,6 @@ settings_ui
   = @danilo-leal
   = @probably-neb
 
-sum_tree
-  = @Veykril
-
-support
-  = @miguelraz
-
 tasks
   = @SomeoneToIgnore
   = @Veykril
@@ -113,14 +106,12 @@ terminal
   = @kubkon
   = @Veykril
 
-text
-  = @Veykril
-
 vim
   = @ConradIrwin
   = @dinocosta
+  = @p1n3appl3
   = @probably-neb
 
 windows
+  = @localcc
   = @reflectronic
-  = @Veykril

@@ -222,12 +222,16 @@ impl McpServer {
                 } else if let Some(handler) = handlers.borrow().get(&request.method.as_ref()) {
                     let outgoing_tx = outgoing_tx.clone();
 
-                    let task = cx.update(|cx| handler(request_id, request.params, cx));
-                    cx.spawn(async move |_| {
-                        let response = task.await;
-                        outgoing_tx.unbounded_send(response).ok();
-                    })
-                    .detach();
+                    if let Some(task) = cx
+                        .update(|cx| handler(request_id, request.params, cx))
+                        .log_err()
+                    {
+                        cx.spawn(async move |_| {
+                            let response = task.await;
+                            outgoing_tx.unbounded_send(response).ok();
+                        })
+                        .detach();
+                    }
                 } else {
                     Self::send_err(
                         request_id,

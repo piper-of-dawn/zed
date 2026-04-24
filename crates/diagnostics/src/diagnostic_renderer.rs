@@ -6,13 +6,16 @@ use editor::{
     hover_popover::diagnostics_markdown_style,
 };
 use gpui::{AppContext, Entity, Focusable, WeakEntity};
-use language::{BufferId, Diagnostic, DiagnosticEntryRef, LanguageRegistry};
+use language::{BufferId, Diagnostic, DiagnosticEntryRef};
 use lsp::DiagnosticSeverity;
-use markdown::{CopyButtonVisibility, Markdown, MarkdownElement};
+use markdown::{Markdown, MarkdownElement};
 use settings::Settings;
-use text::Point;
-use theme_settings::ThemeSettings;
-use ui::{CopyButton, prelude::*};
+use text::{AnchorRangeExt, Point};
+use theme::ThemeSettings;
+use ui::{
+    ActiveTheme, AnyElement, App, Context, IntoElement, ParentElement, SharedString, Styled,
+    Window, div,
+};
 use util::maybe;
 
 use crate::toolbar_controls::DiagnosticsToolbarEditor;
@@ -24,7 +27,6 @@ impl DiagnosticRenderer {
         diagnostic_group: Vec<DiagnosticEntryRef<'_, Point>>,
         buffer_id: BufferId,
         diagnostics_editor: Option<Arc<dyn DiagnosticsToolbarEditor>>,
-        language_registry: Option<Arc<LanguageRegistry>>,
         cx: &mut App,
     ) -> Vec<DiagnosticBlock> {
         let Some(primary_ix) = diagnostic_group
@@ -73,15 +75,11 @@ impl DiagnosticRenderer {
                         ))
                     }
                 }
-
                 results.push(DiagnosticBlock {
                     initial_range: primary.range.clone(),
                     severity: primary.diagnostic.severity,
                     diagnostics_editor: diagnostics_editor.clone(),
-                    copy_message: primary.diagnostic.message.clone().into(),
-                    markdown: cx.new(|cx| {
-                        Markdown::new(markdown.into(), language_registry.clone(), None, cx)
-                    }),
+                    markdown: cx.new(|cx| Markdown::new(markdown.into(), None, None, cx)),
                 });
             } else {
                 if entry.range.start.row.abs_diff(primary.range.start.row) >= 5 {
@@ -93,10 +91,7 @@ impl DiagnosticRenderer {
                     initial_range: entry.range.clone(),
                     severity: entry.diagnostic.severity,
                     diagnostics_editor: diagnostics_editor.clone(),
-                    copy_message: entry.diagnostic.message.clone().into(),
-                    markdown: cx.new(|cx| {
-                        Markdown::new(markdown.into(), language_registry.clone(), None, cx)
-                    }),
+                    markdown: cx.new(|cx| Markdown::new(markdown.into(), None, None, cx)),
                 });
             }
         }
@@ -123,16 +118,9 @@ impl editor::DiagnosticRenderer for DiagnosticRenderer {
         buffer_id: BufferId,
         snapshot: EditorSnapshot,
         editor: WeakEntity<Editor>,
-        language_registry: Option<Arc<LanguageRegistry>>,
         cx: &mut App,
     ) -> Vec<BlockProperties<Anchor>> {
-        let blocks = Self::diagnostic_blocks_for_group(
-            diagnostic_group,
-            buffer_id,
-            None,
-            language_registry,
-            cx,
-        );
+        let blocks = Self::diagnostic_blocks_for_group(diagnostic_group, buffer_id, None, cx);
 
         blocks
             .into_iter()
@@ -158,16 +146,9 @@ impl editor::DiagnosticRenderer for DiagnosticRenderer {
         diagnostic_group: Vec<DiagnosticEntryRef<'_, Point>>,
         range: Range<Point>,
         buffer_id: BufferId,
-        language_registry: Option<Arc<LanguageRegistry>>,
         cx: &mut App,
     ) -> Option<Entity<Markdown>> {
-        let blocks = Self::diagnostic_blocks_for_group(
-            diagnostic_group,
-            buffer_id,
-            None,
-            language_registry,
-            cx,
-        );
+        let blocks = Self::diagnostic_blocks_for_group(diagnostic_group, buffer_id, None, cx);
         blocks
             .into_iter()
             .find_map(|block| (block.initial_range == range).then(|| block.markdown))
@@ -190,7 +171,6 @@ pub(crate) struct DiagnosticBlock {
     pub(crate) severity: DiagnosticSeverity,
     pub(crate) markdown: Entity<Markdown>,
     pub(crate) diagnostics_editor: Option<Arc<dyn DiagnosticsToolbarEditor>>,
-    pub(crate) copy_message: SharedString,
 }
 
 impl DiagnosticBlock {
@@ -214,48 +194,27 @@ impl DiagnosticBlock {
         let line_height = editor_line_height;
         let diagnostics_editor = self.diagnostics_editor.clone();
 
-        let copy_button_id = format!(
-            "copy-diagnostic-{}-{}-{}-{}",
-            self.initial_range.start.row,
-            self.initial_range.start.column,
-            self.initial_range.end.row,
-            self.initial_range.end.column
-        );
-
-        h_flex()
-            .max_w(max_width)
-            .pl_1p5()
-            .pr_0p5()
-            .items_start()
-            .gap_1()
+        div()
             .border_l_2()
+            .px_2()
             .line_height(line_height)
             .bg(background_color)
             .border_color(border_color)
+            .max_w(max_width)
             .child(
-                div().flex_1().min_w_0().child(
-                    MarkdownElement::new(
-                        self.markdown.clone(),
-                        diagnostics_markdown_style(bcx.window, cx),
-                    )
-                    .code_block_renderer(markdown::CodeBlockRenderer::Default {
-                        copy_button_visibility: CopyButtonVisibility::Hidden,
-                        border: false,
-                    })
-                    .on_url_click({
-                        move |link, window, cx| {
-                            editor
-                                .update(cx, |editor, cx| {
-                                    Self::open_link(editor, &diagnostics_editor, link, window, cx)
-                                })
-                                .ok();
-                        }
-                    }),
-                ),
-            )
-            .child(
-                CopyButton::new(copy_button_id, self.copy_message.clone())
-                    .tooltip_label("Copy Diagnostic"),
+                MarkdownElement::new(
+                    self.markdown.clone(),
+                    diagnostics_markdown_style(bcx.window, cx),
+                )
+                .on_url_click({
+                    move |link, window, cx| {
+                        editor
+                            .update(cx, |editor, cx| {
+                                Self::open_link(editor, &diagnostics_editor, link, window, cx)
+                            })
+                            .ok();
+                    }
+                }),
             )
             .into_any_element()
     }
@@ -289,12 +248,23 @@ impl DiagnosticBlock {
                 .nth(ix)
             {
                 let multibuffer = editor.buffer().read(cx);
-                if let Some(anchor_range) = multibuffer
-                    .snapshot(cx)
-                    .buffer_anchor_range_to_anchor_range(diagnostic.range)
-                {
-                    Self::jump_to(editor, anchor_range, window, cx);
+                let Some(snapshot) = multibuffer
+                    .buffer(buffer_id)
+                    .map(|entity| entity.read(cx).snapshot())
+                else {
                     return;
+                };
+
+                for (excerpt_id, range) in multibuffer.excerpts_for_buffer(buffer_id, cx) {
+                    if range.context.overlaps(&diagnostic.range, &snapshot) {
+                        Self::jump_to(
+                            editor,
+                            Anchor::range_in_buffer(excerpt_id, buffer_id, diagnostic.range),
+                            window,
+                            cx,
+                        );
+                        return;
+                    }
                 }
             }
         } else if let Some(diagnostic) = editor
@@ -320,6 +290,6 @@ impl DiagnosticBlock {
         editor.change_selections(Default::default(), window, cx, |s| {
             s.select_ranges([range.start..range.start]);
         });
-        window.focus(&editor.focus_handle(cx), cx);
+        window.focus(&editor.focus_handle(cx));
     }
 }

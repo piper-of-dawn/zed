@@ -1,24 +1,25 @@
-use anyhow::anyhow;
+use std::any::Any;
+
+use command_palette_hooks::CommandPaletteFilter;
 use commit_modal::CommitModal;
 use editor::{Editor, actions::DiffClipboardWithSelectionData};
-
-use project::ProjectPath;
 use ui::{
     Headline, HeadlineSize, Icon, IconName, IconSize, IntoElement, ParentElement, Render, Styled,
     StyledExt, div, h_flex, rems, v_flex,
 };
 
 mod blame_ui;
-pub mod clone;
 
 use git::{
     repository::{Branch, Upstream, UpstreamTracking, UpstreamTrackingStatus},
     status::{FileStatus, StatusCode, UnmergedStatus, UnmergedStatusCode},
 };
 use gpui::{
-    App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window,
+    Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
+    Window, actions,
 };
 use menu::{Cancel, Confirm};
+use onboarding::GitOnboardingModal;
 use project::git_store::Repository;
 use project_diff::ProjectDiff;
 use ui::prelude::*;
@@ -34,11 +35,9 @@ pub mod commit_tooltip;
 pub mod commit_view;
 mod conflict_view;
 pub mod file_diff_view;
-pub mod file_history_view;
 pub mod git_panel;
 mod git_panel_settings;
-pub mod git_picker;
-pub mod multi_diff_view;
+pub mod onboarding;
 pub mod picker_prompt;
 pub mod project_diff;
 pub(crate) mod remote_output;
@@ -47,7 +46,13 @@ pub mod stash_picker;
 pub mod text_diff_view;
 pub mod worktree_picker;
 
-pub use conflict_view::MergeConflictIndicator;
+actions!(
+    git,
+    [
+        /// Resets the git onboarding state to show the tutorial again.
+        ResetOnboarding
+    ]
+);
 
 pub fn init(cx: &mut App) {
     editor::set_blame_renderer(blame_ui::GitBlameRenderer, cx);
@@ -63,22 +68,15 @@ pub fn init(cx: &mut App) {
         CommitModal::register(workspace);
         git_panel::register(workspace);
         repository_selector::register(workspace);
-        git_picker::register(workspace);
+        branch_picker::register(workspace);
+        worktree_picker::register(workspace);
+        stash_picker::register(workspace);
 
         let project = workspace.project().read(cx);
         if project.is_read_only(cx) {
             return;
         }
         if !project.is_via_collab() {
-            workspace.register_action(
-                |workspace, _: &zed_actions::git::CreatePullRequest, window, cx| {
-                    if let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) {
-                        panel.update(cx, |panel, cx| {
-                            panel.create_pull_request(window, cx);
-                        });
-                    }
-                },
-            );
             workspace.register_action(|workspace, _: &git::Fetch, window, cx| {
                 let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
                     return;
@@ -184,6 +182,21 @@ pub fn init(cx: &mut App) {
                 panel.uncommit(window, cx);
             })
         });
+        CommandPaletteFilter::update_global(cx, |filter, _cx| {
+            filter.hide_action_types(&[
+                zed_actions::OpenGitIntegrationOnboarding.type_id(),
+                // ResetOnboarding.type_id(),
+            ]);
+        });
+        workspace.register_action(
+            move |workspace, _: &zed_actions::OpenGitIntegrationOnboarding, window, cx| {
+                GitOnboardingModal::toggle(workspace, window, cx)
+            },
+        );
+        workspace.register_action(move |_, _: &ResetOnboarding, window, cx| {
+            window.dispatch_action(workspace::RestoreBanner.boxed_clone(), cx);
+            window.refresh();
+        });
         workspace.register_action(|workspace, _action: &git::Init, window, cx| {
             let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
                 return;
@@ -214,41 +227,6 @@ pub fn init(cx: &mut App) {
                 };
             },
         );
-        workspace.register_action(|workspace, _: &git::FileHistory, window, cx| {
-            let Some(active_item) = workspace.active_item(cx) else {
-                return;
-            };
-            let Some(editor) = active_item.downcast::<Editor>() else {
-                return;
-            };
-            let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton() else {
-                return;
-            };
-            let Some(file) = buffer.read(cx).file() else {
-                return;
-            };
-            let worktree_id = file.worktree_id(cx);
-            let project_path = ProjectPath {
-                worktree_id,
-                path: file.path().clone(),
-            };
-            let project = workspace.project();
-            let git_store = project.read(cx).git_store();
-            let Some((repo, repo_path)) = git_store
-                .read(cx)
-                .repository_and_path_for_project_path(&project_path, cx)
-            else {
-                return;
-            };
-            file_history_view::FileHistoryView::open(
-                repo_path,
-                git_store.downgrade(),
-                repo.downgrade(),
-                workspace.weak_handle(),
-                window,
-                cx,
-            );
-        });
     })
     .detach();
 }
@@ -327,12 +305,12 @@ impl RenameBranchModal {
             match repo
                 .update(cx, |repo, _| {
                     repo.rename_branch(current_branch, new_name.clone())
-                })
+                })?
                 .await
             {
                 Ok(Ok(_)) => Ok(()),
                 Ok(Err(error)) => Err(error),
-                Err(_) => Err(anyhow!("Operation was canceled")),
+                Err(_) => Err(anyhow::anyhow!("Operation was canceled")),
             }
         })
         .detach_and_prompt_err("Failed to rename branch", window, cx, |_, _, _| None);
@@ -801,7 +779,7 @@ impl GitCloneModal {
         });
         let focus_handle = repo_input.focus_handle(cx);
 
-        window.focus(&focus_handle, cx);
+        window.focus(&focus_handle);
 
         Self {
             panel,
@@ -847,7 +825,8 @@ impl Render for GitCloneModal {
                     .child(
                         Button::new("learn-more", "Learn More")
                             .label_size(LabelSize::Small)
-                            .end_icon(Icon::new(IconName::ArrowUpRight).size(IconSize::XSmall))
+                            .icon(IconName::ArrowUpRight)
+                            .icon_size(IconSize::XSmall)
                             .on_click(|_, _, cx| {
                                 cx.open_url("https://github.com/git-guides/git-clone");
                             }),

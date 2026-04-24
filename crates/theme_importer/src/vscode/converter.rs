@@ -1,7 +1,7 @@
 use anyhow::Result;
 use collections::IndexMap;
 use strum::IntoEnumIterator;
-use theme_settings::{
+use theme::{
     FontStyleContent, FontWeightContent, HighlightStyleContent, StatusColorsContent,
     ThemeColorsContent, ThemeContent, ThemeStyleContent, WindowBackgroundContent,
 };
@@ -13,7 +13,7 @@ use super::ZedSyntaxToken;
 
 pub(crate) fn try_parse_font_weight(font_style: &str) -> Option<FontWeightContent> {
     match font_style {
-        style if style.contains("bold") => Some(FontWeightContent::BOLD),
+        style if style.contains("bold") => Some(FontWeightContent::Bold),
         _ => None,
     }
 }
@@ -207,7 +207,6 @@ impl VsCodeThemeConverter {
             terminal_ansi_white: vscode_colors.terminal.ansi_white.clone(),
             terminal_ansi_bright_white: vscode_colors.terminal.ansi_bright_white.clone(),
             link_text_hover: vscode_colors.text_link.active_foreground.clone(),
-            vim_yank_background: vscode_colors.editor.range_highlight_background.clone(),
             ..Default::default()
         })
     }

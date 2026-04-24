@@ -9,15 +9,16 @@ mod extension_store_test;
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
-use client::{Client, proto, telemetry::Telemetry};
-use cloud_api_types::{ExtensionMetadata, ExtensionProvides, GetExtensionsResponse};
-use collections::{BTreeMap, BTreeSet, HashSet, btree_map};
+use client::ExtensionProvides;
+use client::{Client, ExtensionMetadata, GetExtensionsResponse, proto, telemetry::Telemetry};
+use collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
 pub use extension::ExtensionManifest;
 use extension::extension_builder::{CompileExtensionOptions, ExtensionBuilder};
 use extension::{
     ExtensionContextServerProxy, ExtensionDebugAdapterProviderProxy, ExtensionEvents,
     ExtensionGrammarProxy, ExtensionHostProxy, ExtensionLanguageProxy,
-    ExtensionLanguageServerProxy, ExtensionSnippetProxy, ExtensionThemeProxy,
+    ExtensionLanguageServerProxy, ExtensionSlashCommandProxy, ExtensionSnippetProxy,
+    ExtensionThemeProxy,
 };
 use fs::{Fs, RemoveOptions};
 use futures::future::join_all;
@@ -31,8 +32,8 @@ use futures::{
     select_biased,
 };
 use gpui::{
-    App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Global, Task, UpdateGlobal as _,
-    WeakEntity, actions,
+    App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Global, Task, WeakEntity,
+    actions,
 };
 use http_client::{AsyncBody, HttpClient, HttpClientWithUrl};
 use language::{
@@ -42,10 +43,10 @@ use language::{
 use node_runtime::NodeRuntime;
 use project::ContextProviderWithTasks;
 use release_channel::ReleaseChannel;
-use remote::RemoteClient;
-use semver::Version;
+use remote::{RemoteClient, RemoteConnectionOptions};
+use semantic_version::SemanticVersion;
 use serde::{Deserialize, Serialize};
-use settings::{SemanticTokenRules, Settings, SettingsStore};
+use settings::Settings;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{
@@ -54,7 +55,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use task::TaskTemplates;
 use url::Url;
 use util::{ResultExt, paths::RemotePathBuf};
 use wasm_host::{
@@ -98,7 +98,7 @@ pub fn is_version_compatible(
         .manifest
         .wasm_api_version
         .as_ref()
-        .and_then(|wasm_api_version| Version::from_str(wasm_api_version).ok())
+        .and_then(|wasm_api_version| SemanticVersion::from_str(wasm_api_version).ok())
         && !is_supported_wasm_api_version(release_channel, wasm_api_version)
     {
         return false;
@@ -123,7 +123,7 @@ pub struct ExtensionStore {
     pub wasm_host: Arc<WasmHost>,
     pub wasm_extensions: Vec<(Arc<ExtensionManifest>, WasmExtension)>,
     pub tasks: Vec<Task<()>>,
-    pub remote_clients: Vec<WeakEntity<RemoteClient>>,
+    pub remote_clients: HashMap<RemoteConnectionOptions, WeakEntity<RemoteClient>>,
     pub ssh_registered_tx: UnboundedSender<()>,
 }
 
@@ -274,7 +274,7 @@ impl ExtensionStore {
             reload_tx,
             tasks: Vec::new(),
 
-            remote_clients: Default::default(),
+            remote_clients: HashMap::default(),
             ssh_registered_tx: connection_registered_tx,
         };
 
@@ -282,7 +282,7 @@ impl ExtensionStore {
         // list of the installed extensions and the resources that they provide.
         // This index is loaded synchronously on startup.
         let (index_content, index_metadata, extensions_metadata) =
-            cx.foreground_executor().block_on(async {
+            cx.background_executor().block(async {
                 futures::join!(
                     this.fs.load(&this.index_path),
                     this.fs.metadata(&this.index_path),
@@ -336,7 +336,6 @@ impl ExtensionStore {
 
                 let mut index_changed = false;
                 let mut debounce_timer = cx.background_spawn(futures::future::pending()).fuse();
-
                 loop {
                     select_biased! {
                         _ = debounce_timer => {
@@ -344,23 +343,29 @@ impl ExtensionStore {
                                 let index = this
                                     .update(cx, |this, cx| this.rebuild_extension_index(cx))?
                                     .await;
-                                this.update(cx, |this, cx| this.extensions_updated(index, cx))?
+                                this.update( cx, |this, cx| this.extensions_updated(index, cx))?
                                     .await;
                                 index_changed = false;
                             }
 
-                            Self::update_remote_clients(&this, cx).await?;
+                            Self::update_ssh_clients(&this, cx).await?;
                         }
                         _ = connection_registered_rx.next() => {
-                            debounce_timer = cx.background_executor().timer(RELOAD_DEBOUNCE_DURATION).fuse()
+                            debounce_timer = cx
+                                .background_executor()
+                                .timer(RELOAD_DEBOUNCE_DURATION)
+                                .fuse();
                         }
                         extension_id = reload_rx.next() => {
                             let Some(extension_id) = extension_id else { break; };
-                            this.update(cx, |this, _cx| {
+                            this.update(cx, |this, _| {
                                 this.modified_extensions.extend(extension_id);
                             })?;
                             index_changed = true;
-                            debounce_timer = cx.background_executor().timer(RELOAD_DEBOUNCE_DURATION).fuse()
+                            debounce_timer = cx
+                                .background_executor()
+                                .timer(RELOAD_DEBOUNCE_DURATION)
+                                .fuse();
                         }
                     }
                 }
@@ -634,8 +639,9 @@ impl ExtensionStore {
                     this.extension_index.extensions.get(&extension.id)
                 {
                     let installed_version =
-                        Version::from_str(&installed_extension.manifest.version).ok()?;
-                    let latest_version = Version::from_str(&extension.manifest.version).ok()?;
+                        SemanticVersion::from_str(&installed_extension.manifest.version).ok()?;
+                    let latest_version =
+                        SemanticVersion::from_str(&extension.manifest.version).ok()?;
 
                     if installed_version >= latest_version {
                         return None;
@@ -752,28 +758,29 @@ impl ExtensionStore {
             if let Some(content_length) = content_length {
                 let actual_len = tar_gz_bytes.len();
                 if content_length != actual_len {
-                    bail!(concat!(
-                        "downloaded extension size {actual_len} ",
-                        "does not match content length {content_length}"
-                    ));
+                    bail!("downloaded extension size {actual_len} does not match content length {content_length}");
                 }
             }
             let decompressed_bytes = GzipDecoder::new(BufReader::new(tar_gz_bytes.as_slice()));
             let archive = Archive::new(decompressed_bytes);
             archive.unpack(extension_dir).await?;
-            this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
-                .await;
+            this.update( cx, |this, cx| {
+                this.reload(Some(extension_id.clone()), cx)
+            })?
+            .await;
 
             if let ExtensionOperation::Install = operation {
-                this.update(cx, |this, cx| {
+                this.update( cx, |this, cx| {
                     cx.emit(Event::ExtensionInstalled(extension_id.clone()));
                     if let Some(events) = ExtensionEvents::try_global(cx)
-                        && let Some(manifest) = this.extension_manifest_for_id(&extension_id)
-                    {
-                        events.update(cx, |this, cx| {
-                            this.emit(extension::Event::ExtensionInstalled(manifest.clone()), cx)
-                        });
-                    }
+                        && let Some(manifest) = this.extension_manifest_for_id(&extension_id) {
+                            events.update(cx, |this, cx| {
+                                this.emit(
+                                    extension::Event::ExtensionInstalled(manifest.clone()),
+                                    cx,
+                                )
+                            });
+                        }
                 })
                 .ok();
             }
@@ -975,14 +982,12 @@ impl ExtensionStore {
 
             cx.background_spawn({
                 let extension_source_path = extension_source_path.clone();
-                let fs = fs.clone();
                 async move {
                     builder
                         .compile_extension(
                             &extension_source_path,
                             &mut extension_manifest,
-                            CompileExtensionOptions::dev(),
-                            fs,
+                            CompileExtensionOptions { release: false },
                         )
                         .await
                 }
@@ -1039,9 +1044,13 @@ impl ExtensionStore {
 
         cx.notify();
         let compile = cx.background_spawn(async move {
-            let mut manifest = ExtensionManifest::load(fs.clone(), &path).await?;
+            let mut manifest = ExtensionManifest::load(fs, &path).await?;
             builder
-                .compile_extension(&path, &mut manifest, CompileExtensionOptions::dev(), fs)
+                .compile_extension(
+                    &path,
+                    &mut manifest,
+                    CompileExtensionOptions { release: true },
+                )
                 .await
         });
 
@@ -1069,7 +1078,6 @@ impl ExtensionStore {
     /// no longer in the manifest, or whose files have changed on disk.
     /// Then it loads any themes, languages, or grammars that are newly
     /// added to the manifest, or whose files have changed on disk.
-    #[ztracing::instrument(skip_all)]
     fn extensions_updated(
         &mut self,
         mut new_index: ExtensionIndex,
@@ -1121,7 +1129,6 @@ impl ExtensionStore {
         }
 
         if extensions_to_load.is_empty() && extensions_to_unload.is_empty() {
-            self.reload_complete_senders.clear();
             return Task::ready(());
         }
 
@@ -1208,6 +1215,9 @@ impl ExtensionStore {
             for locator in extension.manifest.debug_locators.keys() {
                 self.proxy.unregister_debug_locator(locator.clone());
             }
+            for command_name in extension.manifest.slash_commands.keys() {
+                self.proxy.unregister_slash_command(command_name.clone());
+            }
         }
 
         self.wasm_extensions
@@ -1216,15 +1226,6 @@ impl ExtensionStore {
         self.proxy.remove_icon_themes(icon_themes_to_remove);
         self.proxy
             .remove_languages(&languages_to_remove, &grammars_to_remove);
-
-        // Remove semantic token rules for languages being unloaded.
-        if !languages_to_remove.is_empty() {
-            SettingsStore::update_global(cx, |store, cx| {
-                for language in &languages_to_remove {
-                    store.remove_language_semantic_token_rules(language.as_ref(), cx);
-                }
-            });
-        }
 
         let mut grammars_to_add = Vec::new();
         let mut themes_to_add = Vec::new();
@@ -1258,12 +1259,10 @@ impl ExtensionStore {
                     (path, icons_root_path)
                 },
             ));
-            snippets_to_add.extend(extension.manifest.snippets.iter().flat_map(|snippets| {
-                snippets.paths().map(|snippets_path| {
-                    let mut path = self.installed_dir.clone();
-                    path.extend([Path::new(extension_id.as_ref()), snippets_path.as_path()]);
-                    path
-                })
+            snippets_to_add.extend(extension.manifest.snippets.iter().map(|snippets_path| {
+                let mut path = self.installed_dir.clone();
+                path.extend([Path::new(extension_id.as_ref()), snippets_path.as_path()]);
+                path
             }));
         }
 
@@ -1273,33 +1272,23 @@ impl ExtensionStore {
             .iter()
             .filter(|(_, entry)| extensions_to_load.contains(&entry.extension))
             .collect::<Vec<_>>();
-        let mut semantic_token_rules_to_add: Vec<(LanguageName, SemanticTokenRules)> = Vec::new();
         for (language_name, language) in languages_to_add {
             let mut language_path = self.installed_dir.clone();
             language_path.extend([
                 Path::new(language.extension.as_ref()),
                 language.path.as_path(),
             ]);
-
-            // Load semantic token rules if present in the language directory.
-            let rules_path = language_path.join(SemanticTokenRules::FILE_NAME);
-            if std::fs::exists(&rules_path).is_ok_and(|exists| exists)
-                && let Some(rules) = SemanticTokenRules::load(&rules_path).log_err()
-            {
-                semantic_token_rules_to_add.push((language_name.clone(), rules));
-            }
-
             self.proxy.register_language(
                 language_name.clone(),
                 language.grammar.clone(),
                 language.matcher.clone(),
                 language.hidden,
                 Arc::new(move || {
-                    let config =
-                        LanguageConfig::load(language_path.join(LanguageConfig::FILE_NAME))?;
+                    let config = std::fs::read_to_string(language_path.join("config.toml"))?;
+                    let config: LanguageConfig = ::toml::from_str(&config)?;
                     let queries = load_plugin_queries(&language_path);
                     let context_provider =
-                        std::fs::read_to_string(language_path.join(TaskTemplates::FILE_NAME))
+                        std::fs::read_to_string(language_path.join("tasks.json"))
                             .ok()
                             .and_then(|contents| {
                                 let definitions =
@@ -1316,15 +1305,6 @@ impl ExtensionStore {
                     })
                 }),
             );
-        }
-
-        // Register semantic token rules for newly loaded extension languages.
-        if !semantic_token_rules_to_add.is_empty() {
-            SettingsStore::update_global(cx, |store, cx| {
-                for (language_name, rules) in semantic_token_rules_to_add {
-                    store.set_language_semantic_token_rules(language_name.0.clone(), rules, cx);
-                }
-            });
         }
 
         let fs = self.fs.clone();
@@ -1397,11 +1377,7 @@ impl ExtensionStore {
                         wasm_extensions.push((extension.manifest.clone(), wasm_extension))
                     }
                     Err(e) => {
-                        log::error!(
-                            "Failed to load extension: {}, {:#}",
-                            extension.manifest.id,
-                            e
-                        );
+                        log::error!("Failed to load extension: {e:#}");
                         this.update(cx, |_, cx| {
                             cx.emit(Event::ExtensionFailedToLoad(extension.manifest.id.clone()))
                         })
@@ -1424,6 +1400,21 @@ impl ExtensionStore {
                                 language.clone(),
                             );
                         }
+                    }
+
+                    for (slash_command_name, slash_command) in &manifest.slash_commands {
+                        this.proxy.register_slash_command(
+                            extension.clone(),
+                            extension::SlashCommand {
+                                name: slash_command_name.to_string(),
+                                description: slash_command.description.to_string(),
+                                // We don't currently expose this as a configurable option, as it currently drives
+                                // the `menu_text` on the `SlashCommand` trait, which is not used for slash commands
+                                // defined in extensions, as they are not able to be added to the menu.
+                                tooltip_text: String::new(),
+                                requires_argument: slash_command.requires_argument,
+                            },
+                        );
                     }
 
                     for id in manifest.context_servers.keys() {
@@ -1537,14 +1528,12 @@ impl ExtensionStore {
         let is_dev = fs
             .metadata(&extension_dir)
             .await?
-            .with_context(|| format!("missing extension directory {extension_dir:?}"))?
+            .context("directory does not exist")?
             .is_symlink;
 
-        let language_dir = extension_dir.join("languages");
-        if let Ok(mut language_paths) = fs.read_dir(&language_dir).await {
+        if let Ok(mut language_paths) = fs.read_dir(&extension_dir.join("languages")).await {
             while let Some(language_path) = language_paths.next().await {
-                let language_path = language_path
-                    .with_context(|| format!("reading entries in language dir {language_dir:?}"))?;
+                let language_path = language_path?;
                 let Ok(relative_path) = language_path.strip_prefix(&extension_dir) else {
                     continue;
                 };
@@ -1554,10 +1543,7 @@ impl ExtensionStore {
                 if !fs_metadata.is_dir {
                     continue;
                 }
-                let language_config_path = language_path.join(LanguageConfig::FILE_NAME);
-                let config = fs.load(&language_config_path).await.with_context(|| {
-                    format!("loading language config from {language_config_path:?}")
-                })?;
+                let config = fs.load(&language_path.join("config.toml")).await?;
                 let config = ::toml::from_str::<LanguageConfig>(&config)?;
 
                 let relative_path = relative_path.to_path_buf();
@@ -1677,7 +1663,7 @@ impl ExtensionStore {
         cx.background_spawn(async move {
             const EXTENSION_TOML: &str = "extension.toml";
             const EXTENSION_WASM: &str = "extension.wasm";
-            const CONFIG_TOML: &str = LanguageConfig::FILE_NAME;
+            const CONFIG_TOML: &str = "config.toml";
 
             if is_dev {
                 let manifest_toml = toml::to_string(&loaded_extension.manifest)?;
@@ -1740,7 +1726,7 @@ impl ExtensionStore {
         })
     }
 
-    async fn sync_extensions_to_remotes(
+    async fn sync_extensions_over_ssh(
         this: &WeakEntity<Self>,
         client: WeakEntity<RemoteClient>,
         cx: &mut AsyncApp,
@@ -1793,11 +1779,7 @@ impl ExtensionStore {
                     })?,
                 path_style,
             );
-            log::info!(
-                "Uploading extension {} to {:?}",
-                missing_extension.clone().id,
-                dest_dir
-            );
+            log::info!("Uploading extension {}", missing_extension.clone().id);
 
             client
                 .update(cx, |client, cx| {
@@ -1810,35 +1792,27 @@ impl ExtensionStore {
                 missing_extension.clone().id
             );
 
-            let result = client
+            client
                 .update(cx, |client, _cx| {
                     client.proto_client().request(proto::InstallExtension {
                         tmp_dir: dest_dir.to_proto(),
-                        extension: Some(missing_extension.clone()),
+                        extension: Some(missing_extension),
                     })
                 })?
-                .await;
-
-            if let Err(e) = result {
-                log::error!(
-                    "Failed to install extension {}: {}",
-                    missing_extension.id,
-                    e
-                );
-            }
+                .await?;
         }
 
         anyhow::Ok(())
     }
 
-    pub async fn update_remote_clients(this: &WeakEntity<Self>, cx: &mut AsyncApp) -> Result<()> {
+    pub async fn update_ssh_clients(this: &WeakEntity<Self>, cx: &mut AsyncApp) -> Result<()> {
         let clients = this.update(cx, |this, _cx| {
-            this.remote_clients.retain(|v| v.upgrade().is_some());
-            this.remote_clients.clone()
+            this.remote_clients.retain(|_k, v| v.upgrade().is_some());
+            this.remote_clients.values().cloned().collect::<Vec<_>>()
         })?;
 
         for client in clients {
-            Self::sync_extensions_to_remotes(this, client, cx)
+            Self::sync_extensions_over_ssh(this, client, cx)
                 .await
                 .log_err();
         }
@@ -1846,12 +1820,16 @@ impl ExtensionStore {
         anyhow::Ok(())
     }
 
-    pub fn register_remote_client(
-        &mut self,
-        client: Entity<RemoteClient>,
-        _cx: &mut Context<Self>,
-    ) {
-        self.remote_clients.push(client.downgrade());
+    pub fn register_remote_client(&mut self, client: Entity<RemoteClient>, cx: &mut Context<Self>) {
+        let options = client.read(cx).connection_options();
+
+        if let Some(existing_client) = self.remote_clients.get(&options)
+            && existing_client.upgrade().is_some()
+        {
+            return;
+        }
+
+        self.remote_clients.insert(options, client.downgrade());
         self.ssh_registered_tx.unbounded_send(()).ok();
     }
 }

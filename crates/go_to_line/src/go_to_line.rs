@@ -2,7 +2,7 @@ pub mod cursor_position;
 
 use cursor_position::UserCaretPosition;
 use editor::{
-    Anchor, Editor, MultiBufferSnapshot, RowHighlightOptions, SelectionEffects, ToPoint,
+    Anchor, Editor, MultiBufferSnapshot, RowHighlightOptions, SelectionEffects, ToOffset, ToPoint,
     actions::Tab,
     scroll::{Autoscroll, ScrollOffset},
 };
@@ -11,7 +11,6 @@ use gpui::{
     Subscription, div, prelude::*,
 };
 use language::Buffer;
-use multi_buffer::MultiBufferRow;
 use text::{Bias, Point};
 use theme::ActiveTheme;
 use ui::prelude::*;
@@ -27,7 +26,6 @@ pub struct GoToLine {
     active_editor: Entity<Editor>,
     current_text: SharedString,
     prev_scroll_position: Option<gpui::Point<ScrollOffset>>,
-    current_line: u32,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -63,7 +61,7 @@ impl GoToLine {
                     return;
                 };
                 let editor = editor_handle.read(cx);
-                let Some(buffer) = editor.active_buffer(cx) else {
+                let Some((_, buffer, _)) = editor.active_excerpt(cx) else {
                     return;
                 };
                 workspace.update(cx, |workspace, cx| {
@@ -93,9 +91,9 @@ impl GoToLine {
             let last_line = editor
                 .buffer()
                 .read(cx)
-                .snapshot(cx)
-                .excerpts_for_buffer(snapshot.remote_id())
-                .map(move |range| text::ToPoint::to_point(&range.context.end, &snapshot).row)
+                .excerpts_for_buffer(snapshot.remote_id(), cx)
+                .into_iter()
+                .map(move |(_, range)| text::ToPoint::to_point(&range.context.end, &snapshot).row)
                 .max()
                 .unwrap_or(0);
 
@@ -145,7 +143,6 @@ impl GoToLine {
             active_editor,
             current_text: current_text.into(),
             prev_scroll_position: Some(scroll_position),
-            current_line: line,
             _subscriptions: vec![line_editor_change, cx.on_release_in(window, Self::release)],
         }
     }
@@ -213,63 +210,35 @@ impl GoToLine {
         snapshot: &MultiBufferSnapshot,
         cx: &Context<Editor>,
     ) -> Option<Anchor> {
-        let (query_row, query_char) = if let Some(offset) = self.relative_line_from_query(cx) {
-            let target = if offset >= 0 {
-                self.current_line.saturating_add(offset as u32)
-            } else {
-                self.current_line.saturating_sub(offset.unsigned_abs())
-            };
-            (target, None)
-        } else {
-            self.line_and_char_from_query(cx)?
-        };
-
+        let (query_row, query_char) = self.line_and_char_from_query(cx)?;
         let row = query_row.saturating_sub(1);
         let character = query_char.unwrap_or(0).saturating_sub(1);
 
-        let target_multi_buffer_row = MultiBufferRow(row);
-        let (buffer_snapshot, target_in_buffer) = snapshot.point_to_buffer_point(Point::new(
-            target_multi_buffer_row.min(snapshot.max_row()).0,
-            0,
-        ))?;
-        let target_point =
-            buffer_snapshot.point_from_external_input(target_in_buffer.row, character);
-        Some(snapshot.anchor_before(target_point))
-    }
+        let start_offset = Point::new(row, 0).to_offset(snapshot);
+        const MAX_BYTES_IN_UTF_8: u32 = 4;
+        let max_end_offset = snapshot
+            .clip_point(
+                Point::new(row, character * MAX_BYTES_IN_UTF_8 + 1),
+                Bias::Right,
+            )
+            .to_offset(snapshot);
 
-    fn relative_line_from_query(&self, cx: &App) -> Option<i32> {
-        let input = self.line_editor.read(cx).text(cx);
-        let trimmed = input.trim();
-
-        let mut last_direction_char: Option<char> = None;
-        let mut number_start_index = 0;
-
-        for (i, c) in trimmed.char_indices() {
-            match c {
-                '+' | 'f' | 'F' | '-' | 'b' | 'B' => {
-                    last_direction_char = Some(c);
-                    number_start_index = i + c.len_utf8();
+        let mut chars_to_iterate = character;
+        let mut end_offset = start_offset;
+        'outer: for text_chunk in snapshot.text_for_range(start_offset..max_end_offset) {
+            let mut offset_increment = 0;
+            for c in text_chunk.chars() {
+                if chars_to_iterate == 0 {
+                    end_offset += offset_increment;
+                    break 'outer;
+                } else {
+                    chars_to_iterate -= 1;
+                    offset_increment += c.len_utf8();
                 }
-                _ => break,
             }
+            end_offset += offset_increment;
         }
-
-        let direction = last_direction_char?;
-
-        let number_part = &trimmed[number_start_index..];
-        let line_part = number_part
-            .split(FILE_ROW_COLUMN_DELIMITER)
-            .next()
-            .unwrap_or(number_part)
-            .trim();
-
-        let value = line_part.parse::<u32>().ok()?;
-
-        match direction {
-            '+' | 'f' | 'F' => Some(value as i32),
-            '-' | 'b' | 'B' => Some(-(value as i32)),
-            _ => None,
-        }
+        Some(snapshot.anchor_before(snapshot.clip_offset(end_offset, Bias::Left)))
     }
 
     fn line_and_char_from_query(&self, cx: &App) -> Option<(u32, Option<u32>)> {
@@ -299,7 +268,7 @@ impl GoToLine {
                 cx,
                 |s| s.select_anchor_ranges([start..start]),
             );
-            editor.focus_handle(cx).focus(window, cx);
+            editor.focus_handle(cx).focus(window);
             cx.notify()
         });
         self.prev_scroll_position.take();
@@ -310,21 +279,12 @@ impl GoToLine {
 
 impl Render for GoToLine {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let help_text = if let Some(offset) = self.relative_line_from_query(cx) {
-            let target_line = if offset >= 0 {
-                self.current_line.saturating_add(offset as u32)
-            } else {
-                self.current_line.saturating_sub(offset.unsigned_abs())
-            };
-            format!("Go to line {target_line} ({offset:+} from current)").into()
-        } else {
-            match self.line_and_char_from_query(cx) {
-                Some((line, Some(character))) => {
-                    format!("Go to line {line}, character {character}").into()
-                }
-                Some((line, None)) => format!("Go to line {line}").into(),
-                None => self.current_text.clone(),
+        let help_text = match self.line_and_char_from_query(cx) {
+            Some((line, Some(character))) => {
+                format!("Go to line {line}, character {character}").into()
             }
+            Some((line, None)) => format!("Go to line {line}").into(),
+            None => self.current_text.clone(),
         };
 
         v_flex()
@@ -362,7 +322,7 @@ mod tests {
     use serde_json::json;
     use std::{num::NonZeroU32, sync::Arc, time::Duration};
     use util::{path, rel_path::rel_path};
-    use workspace::{AppState, MultiWorkspace, Workspace};
+    use workspace::{AppState, Workspace};
 
     #[gpui::test]
     async fn test_go_to_line_view_row_highlights(cx: &mut TestAppContext) {
@@ -391,9 +351,8 @@ mod tests {
         .await;
 
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let worktree_id = workspace.update(cx, |workspace, cx| {
             workspace.project().update(cx, |project, cx| {
                 project.worktrees(cx).next().unwrap().read(cx).id()
@@ -489,9 +448,8 @@ mod tests {
         .await;
 
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         workspace.update_in(cx, |workspace, window, cx| {
             let cursor_position = cx.new(|_| CursorPosition::new(workspace));
             workspace.status_bar().update(cx, |status_bar, cx| {
@@ -575,9 +533,8 @@ mod tests {
         .await;
 
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         workspace.update_in(cx, |workspace, window, cx| {
             let cursor_position = cx.new(|_| CursorPosition::new(workspace));
             workspace.status_bar().update(cx, |status_bar, cx| {
@@ -654,9 +611,8 @@ mod tests {
         .await;
 
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         workspace.update_in(cx, |workspace, window, cx| {
             let cursor_position = cx.new(|_| CursorPosition::new(workspace));
             workspace.status_bar().update(cx, |status_bar, cx| {
@@ -831,9 +787,8 @@ mod tests {
             .await;
 
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let worktree_id = workspace.update(cx, |workspace, cx| {
             workspace.project().update(cx, |project, cx| {
                 project.worktrees(cx).next().unwrap().read(cx).id()
@@ -889,9 +844,8 @@ mod tests {
             .await;
 
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let worktree_id = workspace.update(cx, |workspace, cx| {
             workspace.project().update(cx, |project, cx| {
                 project.worktrees(cx).next().unwrap().read(cx).id()
@@ -945,9 +899,8 @@ mod tests {
             .await;
 
         let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let worktree_id = workspace.update(cx, |workspace, cx| {
             workspace.project().update(cx, |project, cx| {
                 project.worktrees(cx).next().unwrap().read(cx).id()

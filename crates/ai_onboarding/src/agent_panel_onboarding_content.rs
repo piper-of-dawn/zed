@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use client::{Client, UserStore};
-use cloud_api_types::Plan;
+use cloud_llm_client::{Plan, PlanV1, PlanV2};
 use gpui::{Entity, IntoElement, ParentElement};
 use language_model::{LanguageModelRegistry, ZED_CLOUD_PROVIDER_ID};
 use ui::prelude::*;
@@ -11,7 +11,7 @@ use crate::{AgentPanelOnboardingCard, ApiKeysWithoutProviders, ZedAiOnboarding};
 pub struct AgentPanelOnboarding {
     user_store: Entity<UserStore>,
     client: Arc<Client>,
-    has_configured_providers: bool,
+    configured_providers: Vec<(IconName, SharedString)>,
     continue_with_zed_ai: Arc<dyn Fn(&mut Window, &mut App)>,
 }
 
@@ -27,9 +27,8 @@ impl AgentPanelOnboarding {
             |this: &mut Self, _registry, event: &language_model::Event, cx| match event {
                 language_model::Event::ProviderStateChanged(_)
                 | language_model::Event::AddedProvider(_)
-                | language_model::Event::RemovedProvider(_)
-                | language_model::Event::ProvidersChanged => {
-                    this.has_configured_providers = Self::has_configured_providers(cx)
+                | language_model::Event::RemovedProvider(_) => {
+                    this.configured_providers = Self::compute_available_providers(cx)
                 }
                 _ => {}
             },
@@ -39,48 +38,50 @@ impl AgentPanelOnboarding {
         Self {
             user_store,
             client,
-            has_configured_providers: Self::has_configured_providers(cx),
+            configured_providers: Self::compute_available_providers(cx),
             continue_with_zed_ai: Arc::new(continue_with_zed_ai),
         }
     }
 
-    fn has_configured_providers(cx: &App) -> bool {
+    fn compute_available_providers(cx: &App) -> Vec<(IconName, SharedString)> {
         LanguageModelRegistry::read_global(cx)
-            .visible_providers()
+            .providers()
             .iter()
-            .any(|provider| provider.is_authenticated(cx) && provider.id() != ZED_CLOUD_PROVIDER_ID)
+            .filter(|provider| {
+                provider.is_authenticated(cx) && provider.id() != ZED_CLOUD_PROVIDER_ID
+            })
+            .map(|provider| (provider.icon(), provider.name().0))
+            .collect()
     }
 }
 
 impl Render for AgentPanelOnboarding {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let enrolled_in_trial = self
-            .user_store
-            .read(cx)
-            .plan()
-            .is_some_and(|plan| plan == Plan::ZedProTrial);
-
-        let is_pro_user = self
-            .user_store
-            .read(cx)
-            .plan()
-            .is_some_and(|plan| plan == Plan::ZedPro);
-
-        let onboarding = ZedAiOnboarding::new(
-            self.client.clone(),
-            &self.user_store,
-            self.continue_with_zed_ai.clone(),
-            cx,
-        )
-        .with_dismiss({
-            let callback = self.continue_with_zed_ai.clone();
-            move |window, cx| callback(window, cx)
+        let enrolled_in_trial = self.user_store.read(cx).plan().is_some_and(|plan| {
+            matches!(
+                plan,
+                Plan::V1(PlanV1::ZedProTrial) | Plan::V2(PlanV2::ZedProTrial)
+            )
+        });
+        let is_pro_user = self.user_store.read(cx).plan().is_some_and(|plan| {
+            matches!(plan, Plan::V1(PlanV1::ZedPro) | Plan::V2(PlanV2::ZedPro))
         });
 
         AgentPanelOnboardingCard::new()
-            .child(onboarding)
+            .child(
+                ZedAiOnboarding::new(
+                    self.client.clone(),
+                    &self.user_store,
+                    self.continue_with_zed_ai.clone(),
+                    cx,
+                )
+                .with_dismiss({
+                    let callback = self.continue_with_zed_ai.clone();
+                    move |window, cx| callback(window, cx)
+                }),
+            )
             .map(|this| {
-                if enrolled_in_trial || is_pro_user || self.has_configured_providers {
+                if enrolled_in_trial || is_pro_user || !self.configured_providers.is_empty() {
                     this
                 } else {
                     this.child(ApiKeysWithoutProviders::new())

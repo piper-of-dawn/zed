@@ -1,12 +1,12 @@
 use std::{future::Future, time::Duration};
 
-#[cfg(feature = "test-support")]
+#[cfg(test)]
 use gpui::BackgroundExecutor;
 
 #[derive(Clone)]
 pub enum Executor {
     Production,
-    #[cfg(feature = "test-support")]
+    #[cfg(test)]
     Deterministic(BackgroundExecutor),
 }
 
@@ -19,7 +19,7 @@ impl Executor {
             Executor::Production => {
                 tokio::spawn(future);
             }
-            #[cfg(feature = "test-support")]
+            #[cfg(test)]
             Executor::Deterministic(background) => {
                 background.spawn(future).detach();
             }
@@ -31,7 +31,7 @@ impl Executor {
         async move {
             match this {
                 Executor::Production => tokio::time::sleep(duration).await,
-                #[cfg(feature = "test-support")]
+                #[cfg(test)]
                 Executor::Deterministic(background) => background.timer(duration).await,
             }
         }

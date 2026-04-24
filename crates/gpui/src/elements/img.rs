@@ -4,15 +4,13 @@ use crate::{
     Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, Resource,
     SharedString, SharedUri, StyleRefinement, Styled, Task, Window, px,
 };
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
-use futures::Future;
-use gpui_util::ResultExt;
+use futures::{AsyncReadExt, Future};
 use image::{
     AnimationDecoder, DynamicImage, Frame, ImageError, ImageFormat, Rgba,
     codecs::{gif::GifDecoder, webp::WebPDecoder},
 };
-use scheduler::Instant;
 use smallvec::SmallVec;
 use std::{
     fs,
@@ -21,9 +19,10 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
+use util::ResultExt;
 
 use super::{Stateful, StatefulInteractiveElement};
 
@@ -50,7 +49,7 @@ pub enum ImageSource {
 }
 
 fn is_uri(uri: &str) -> bool {
-    url::Url::from_str(uri).is_ok()
+    http_client::Uri::from_str(uri).is_ok()
 }
 
 impl From<SharedUri> for ImageSource {
@@ -315,24 +314,20 @@ impl Element for Img {
                             if let Some(state) = &mut state {
                                 let frame_count = data.frame_count();
                                 if frame_count > 1 {
-                                    if window.is_window_active() {
-                                        let current_time = Instant::now();
-                                        if let Some(last_frame_time) = state.last_frame_time {
-                                            let elapsed = current_time - last_frame_time;
-                                            let frame_duration =
-                                                Duration::from(data.delay(state.frame_index));
+                                    let current_time = Instant::now();
+                                    if let Some(last_frame_time) = state.last_frame_time {
+                                        let elapsed = current_time - last_frame_time;
+                                        let frame_duration =
+                                            Duration::from(data.delay(state.frame_index));
 
-                                            if elapsed >= frame_duration {
-                                                state.frame_index =
-                                                    (state.frame_index + 1) % frame_count;
-                                                state.last_frame_time =
-                                                    Some(current_time - (elapsed - frame_duration));
-                                            }
-                                        } else {
-                                            state.last_frame_time = Some(current_time);
+                                        if elapsed >= frame_duration {
+                                            state.frame_index =
+                                                (state.frame_index + 1) % frame_count;
+                                            state.last_frame_time =
+                                                Some(current_time - (elapsed - frame_duration));
                                         }
                                     } else {
-                                        state.last_frame_time = None;
+                                        state.last_frame_time = Some(current_time);
                                     }
                                 }
                                 state.started_loading = None;
@@ -369,10 +364,7 @@ impl Element for Img {
                                 };
                             }
 
-                            if global_id.is_some()
-                                && data.frame_count() > 1
-                                && window.is_window_active()
-                            {
+                            if global_id.is_some() && data.frame_count() > 1 {
                                 window.request_animation_frame();
                             }
                         }
@@ -610,9 +602,6 @@ impl Asset for ImageAssetLoader {
             let bytes = match source.clone() {
                 Resource::Path(uri) => fs::read(uri.as_ref())?,
                 Resource::Uri(uri) => {
-                    use anyhow::Context as _;
-                    use futures::AsyncReadExt as _;
-
                     let mut response = client
                         .get(uri.as_ref(), ().into(), true)
                         .await
@@ -704,7 +693,7 @@ impl Asset for ImageAssetLoader {
                 Ok(Arc::new(RenderImage::new(data)))
             } else {
                 svg_renderer
-                    .render_single_frame(&bytes, 1.0)
+                    .render_single_frame(&bytes, 1.0, true)
                     .map_err(Into::into)
             }
         }

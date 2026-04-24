@@ -1,4 +1,3 @@
-#![expect(clippy::result_large_err)]
 use std::{path::Path, sync::Arc};
 
 use dap::client::DebugAdapterClient;

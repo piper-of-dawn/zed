@@ -1,25 +1,51 @@
-use gpui::{App, AppContext, ClipboardItem, Context, Entity, Window, div, prelude::*};
+use anyhow::Result;
+use gpui::{
+    App, ClipboardItem, Context, Entity, RetainAllImageCache, Task, Window, div, prelude::*,
+};
 use language::Buffer;
-use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
+use markdown_preview::{
+    markdown_elements::ParsedMarkdown, markdown_parser::parse_markdown,
+    markdown_renderer::render_markdown_block,
+};
+use ui::v_flex;
 
 use crate::outputs::OutputContent;
 
 pub struct MarkdownView {
-    markdown: Entity<Markdown>,
+    raw_text: String,
+    image_cache: Entity<RetainAllImageCache>,
+    contents: Option<ParsedMarkdown>,
+    parsing_markdown_task: Option<Task<Result<()>>>,
 }
 
 impl MarkdownView {
     pub fn from(text: String, cx: &mut Context<Self>) -> Self {
-        let markdown = cx.new(|cx| Markdown::new(text.clone().into(), None, None, cx));
+        let parsed = {
+            let text = text.clone();
+            cx.background_spawn(async move { parse_markdown(&text.clone(), None, None).await })
+        };
+        let task = cx.spawn(async move |markdown_view, cx| {
+            let content = parsed.await;
 
-        Self { markdown }
+            markdown_view.update(cx, |markdown, cx| {
+                markdown.parsing_markdown_task.take();
+                markdown.contents = Some(content);
+                cx.notify();
+            })
+        });
+
+        Self {
+            raw_text: text,
+            image_cache: RetainAllImageCache::new(cx),
+            contents: None,
+            parsing_markdown_task: Some(task),
+        }
     }
 }
 
 impl OutputContent for MarkdownView {
-    fn clipboard_content(&self, _window: &Window, cx: &App) -> Option<ClipboardItem> {
-        let source = self.markdown.read(cx).source().to_string();
-        Some(ClipboardItem::new_string(source))
+    fn clipboard_content(&self, _window: &Window, _cx: &App) -> Option<ClipboardItem> {
+        Some(ClipboardItem::new_string(self.raw_text.clone()))
     }
 
     fn has_clipboard_content(&self, _window: &Window, _cx: &App) -> bool {
@@ -31,10 +57,10 @@ impl OutputContent for MarkdownView {
     }
 
     fn buffer_content(&mut self, _: &mut Window, cx: &mut App) -> Option<Entity<Buffer>> {
-        let source = self.markdown.read(cx).source().to_string();
         let buffer = cx.new(|cx| {
-            let mut buffer =
-                Buffer::local(source.clone(), cx).with_language(language::PLAIN_TEXT.clone(), cx);
+            // TODO: Bring in the language registry so we can set the language to markdown
+            let mut buffer = Buffer::local(self.raw_text.clone(), cx)
+                .with_language(language::PLAIN_TEXT.clone(), cx);
             buffer.set_capability(language::Capability::ReadOnly, cx);
             buffer
         });
@@ -44,13 +70,24 @@ impl OutputContent for MarkdownView {
 
 impl Render for MarkdownView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let style = markdown_style(window, cx);
-        div()
-            .w_full()
-            .child(MarkdownElement::new(self.markdown.clone(), style))
-    }
-}
+        let Some(parsed) = self.contents.as_ref() else {
+            return div().into_any_element();
+        };
 
-fn markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
-    MarkdownStyle::themed(MarkdownFont::Editor, window, cx)
+        let mut markdown_render_context =
+            markdown_preview::markdown_renderer::RenderContext::new(None, window, cx);
+
+        v_flex()
+            .image_cache(self.image_cache.clone())
+            .gap_3()
+            .py_4()
+            .children(parsed.children.iter().map(|child| {
+                div().relative().child(
+                    div()
+                        .relative()
+                        .child(render_markdown_block(child, &mut markdown_render_context)),
+                )
+            }))
+            .into_any_element()
+    }
 }

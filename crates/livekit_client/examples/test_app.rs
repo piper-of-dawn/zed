@@ -23,7 +23,7 @@ actions!(livekit_client, [Quit]);
 fn main() {
     SimpleLogger::init(LevelFilter::Info, Default::default()).expect("could not initialize logger");
 
-    gpui_platform::application().run(|cx| {
+    gpui::Application::new().run(|cx| {
         #[cfg(any(test, feature = "test-support"))]
         println!("USING TEST LIVEKIT");
 
@@ -35,7 +35,15 @@ fn main() {
         cx.activate(true);
         cx.on_action(quit);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus([Menu::new("Zed").items([MenuItem::action("Quit", Quit)])]);
+        cx.set_menus(vec![Menu {
+            name: "Zed".into(),
+            items: vec![MenuItem::Action {
+                name: "Quit".into(),
+                action: Box::new(Quit),
+                os_action: None,
+                checked: false,
+            }],
+        }]);
 
         let livekit_url = std::env::var("LIVEKIT_URL").unwrap_or("http://localhost:7880".into());
         let livekit_key = std::env::var("LIVEKIT_KEY").unwrap_or("devkey".into());
@@ -136,6 +144,7 @@ impl LivekitWindow {
             )
             .unwrap()
         })
+        .unwrap()
     }
 
     fn handle_room_event(&mut self, event: RoomEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -247,7 +256,7 @@ impl LivekitWindow {
         } else {
             let room = self.room.clone();
             cx.spawn_in(window, async move |this, cx| {
-                let (publication, stream, _input_lag_us) = room
+                let (publication, stream) = room
                     .publish_local_microphone_track("test_user".to_string(), false, cx)
                     .await
                     .unwrap();
@@ -369,7 +378,7 @@ impl Render for LivekitWindow {
                             .when_some(state.audio_output_stream.as_ref(), |el, state| {
                                 el.child(
                                     button()
-                                        .id(identity.0.clone())
+                                        .id(SharedString::from(identity.0.clone()))
                                         .child(if state.0.is_enabled() {
                                             "Deafen"
                                         } else {

@@ -8,7 +8,6 @@ use editor::Editor;
 use fs::Fs;
 use gpui::{DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription, prelude::*};
 use language_model::{LanguageModel, LanguageModelRegistry};
-use settings::SettingsStore;
 use settings::{
     LanguageModelProviderSetting, LanguageModelSelection, Settings as _, update_settings_file,
 };
@@ -95,7 +94,6 @@ pub struct ViewProfileMode {
     configure_default_model: NavigableEntry,
     configure_tools: NavigableEntry,
     configure_mcps: NavigableEntry,
-    delete_profile: NavigableEntry,
     cancel_item: NavigableEntry,
 }
 
@@ -111,7 +109,6 @@ pub struct ManageProfilesModal {
     active_model: Option<Arc<dyn LanguageModel>>,
     focus_handle: FocusHandle,
     mode: Mode,
-    _settings_subscription: Subscription,
 }
 
 impl ManageProfilesModal {
@@ -151,29 +148,18 @@ impl ManageProfilesModal {
     ) -> Self {
         let focus_handle = cx.focus_handle();
 
-        // Keep this modal in sync with settings changes (including profile deletion).
-        let settings_subscription =
-            cx.observe_global_in::<SettingsStore>(window, |this, window, cx| {
-                if matches!(this.mode, Mode::ChooseProfile(_)) {
-                    this.mode = Mode::choose_profile(window, cx);
-                    this.focus_handle(cx).focus(window, cx);
-                    cx.notify();
-                }
-            });
-
         Self {
             fs,
             active_model,
             context_server_registry,
             focus_handle,
             mode: Mode::choose_profile(window, cx),
-            _settings_subscription: settings_subscription,
         }
     }
 
     fn choose_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = Mode::choose_profile(window, cx);
-        self.focus_handle(cx).focus(window, cx);
+        self.focus_handle(cx).focus(window);
     }
 
     fn new_profile(
@@ -191,7 +177,7 @@ impl ManageProfilesModal {
             name_editor,
             base_profile_id,
         });
-        self.focus_handle(cx).focus(window, cx);
+        self.focus_handle(cx).focus(window);
     }
 
     pub fn view_profile(
@@ -206,10 +192,9 @@ impl ManageProfilesModal {
             configure_default_model: NavigableEntry::focusable(cx),
             configure_tools: NavigableEntry::focusable(cx),
             configure_mcps: NavigableEntry::focusable(cx),
-            delete_profile: NavigableEntry::focusable(cx),
             cancel_item: NavigableEntry::focusable(cx),
         });
-        self.focus_handle(cx).focus(window, cx);
+        self.focus_handle(cx).focus(window);
     }
 
     fn configure_default_model(
@@ -222,6 +207,7 @@ impl ManageProfilesModal {
         let profile_id_for_closure = profile_id.clone();
 
         let model_picker = cx.new(|cx| {
+            let fs = fs.clone();
             let profile_id = profile_id_for_closure.clone();
 
             language_model_selector(
@@ -249,44 +235,24 @@ impl ManageProfilesModal {
                             })
                     }
                 },
-                {
-                    let fs = fs.clone();
-                    move |model, cx| {
-                        let provider = model.provider_id().0.to_string();
-                        let model_id = model.id().0.to_string();
-                        let profile_id = profile_id.clone();
+                move |model, cx| {
+                    let provider = model.provider_id().0.to_string();
+                    let model_id = model.id().0.to_string();
+                    let profile_id = profile_id.clone();
 
-                        update_settings_file(fs.clone(), cx, move |settings, _cx| {
-                            let agent_settings = settings.agent.get_or_insert_default();
-                            if let Some(profiles) = agent_settings.profiles.as_mut() {
-                                if let Some(profile) = profiles.get_mut(profile_id.0.as_ref()) {
-                                    profile.default_model = Some(LanguageModelSelection {
-                                        provider: LanguageModelProviderSetting(provider.clone()),
-                                        model: model_id.clone(),
-                                        enable_thinking: model.supports_thinking(),
-                                        effort: model
-                                            .default_effort_level()
-                                            .map(|effort| effort.value.to_string()),
-                                        speed: None,
-                                    });
-                                }
+                    update_settings_file(fs.clone(), cx, move |settings, _cx| {
+                        let agent_settings = settings.agent.get_or_insert_default();
+                        if let Some(profiles) = agent_settings.profiles.as_mut() {
+                            if let Some(profile) = profiles.get_mut(profile_id.0.as_ref()) {
+                                profile.default_model = Some(LanguageModelSelection {
+                                    provider: LanguageModelProviderSetting(provider.clone()),
+                                    model: model_id.clone(),
+                                });
                             }
-                        });
-                    }
-                },
-                {
-                    let fs = fs.clone();
-                    move |model, should_be_favorite, cx| {
-                        crate::favorite_models::toggle_in_settings(
-                            model,
-                            should_be_favorite,
-                            fs.clone(),
-                            cx,
-                        );
-                    }
+                        }
+                    });
                 },
                 false, // Do not use popover styles for the model picker
-                self.focus_handle.clone(),
                 window,
                 cx,
             )
@@ -305,7 +271,7 @@ impl ManageProfilesModal {
             model_picker,
             _subscription: dismiss_subscription,
         };
-        self.focus_handle(cx).focus(window, cx);
+        self.focus_handle(cx).focus(window);
     }
 
     fn configure_mcp_tools(
@@ -341,7 +307,7 @@ impl ManageProfilesModal {
             tool_picker,
             _subscription: dismiss_subscription,
         };
-        self.focus_handle(cx).focus(window, cx);
+        self.focus_handle(cx).focus(window);
     }
 
     fn configure_builtin_tools(
@@ -355,22 +321,14 @@ impl ManageProfilesModal {
             return;
         };
 
-        let provider = self.active_model.as_ref().map(|model| model.provider_id());
-        let tool_names: Vec<Arc<str>> = agent::ALL_TOOL_NAMES
-            .iter()
-            .copied()
-            .filter(|name| {
-                let supported_by_provider = provider.as_ref().map_or(true, |provider| {
-                    agent::tool_supports_provider(name, provider)
-                });
-                supported_by_provider
-            })
-            .map(Arc::from)
-            .collect();
-
         let tool_picker = cx.new(|cx| {
             let delegate = ToolPickerDelegate::builtin_tools(
-                tool_names,
+                //todo: This causes the web search tool to show up even it only works when using zed hosted models
+                agent::supported_built_in_tool_names(
+                    self.active_model.as_ref().map(|model| model.provider_id()),
+                )
+                .map(|s| s.into())
+                .collect::<Vec<_>>(),
                 self.fs.clone(),
                 profile_id.clone(),
                 profile,
@@ -390,7 +348,7 @@ impl ManageProfilesModal {
             tool_picker,
             _subscription: dismiss_subscription,
         };
-        self.focus_handle(cx).focus(window, cx);
+        self.focus_handle(cx).focus(window);
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -408,42 +366,6 @@ impl ManageProfilesModal {
             Mode::ConfigureMcps { .. } => {}
             Mode::ConfigureDefaultModel { .. } => {}
         }
-    }
-
-    fn delete_profile(
-        &mut self,
-        profile_id: AgentProfileId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if builtin_profiles::is_builtin(&profile_id) {
-            self.view_profile(profile_id, window, cx);
-            return;
-        }
-
-        let fs = self.fs.clone();
-
-        update_settings_file(fs, cx, move |settings, _cx| {
-            let Some(agent_settings) = settings.agent.as_mut() else {
-                return;
-            };
-
-            let Some(profiles) = agent_settings.profiles.as_mut() else {
-                return;
-            };
-
-            profiles.shift_remove(profile_id.0.as_ref());
-
-            if agent_settings
-                .default_profile
-                .as_deref()
-                .is_some_and(|default_profile| default_profile == profile_id.0.as_ref())
-            {
-                agent_settings.default_profile = Some(AgentProfileId::default().0);
-            }
-        });
-
-        self.choose_profile(window, cx);
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -499,7 +421,7 @@ impl ManageProfilesModal {
         let is_focused = profile.navigation.focus_handle.contains_focused(window, cx);
 
         div()
-            .id(format!("profile-{}", profile.id))
+            .id(SharedString::from(format!("profile-{}", profile.id)))
             .track_focus(&profile.navigation.focus_handle)
             .on_action({
                 let profile_id = profile.id.clone();
@@ -508,7 +430,7 @@ impl ManageProfilesModal {
                 })
             })
             .child(
-                ListItem::new(format!("profile-{}", profile.id))
+                ListItem::new(SharedString::from(format!("profile-{}", profile.id)))
                     .toggle_state(is_focused)
                     .inset(true)
                     .spacing(ListItemSpacing::Sparse)
@@ -833,40 +755,6 @@ impl ManageProfilesModal {
                                         }),
                                 ),
                         )
-                        .child(
-                            div()
-                                .id("delete-profile")
-                                .track_focus(&mode.delete_profile.focus_handle)
-                                .on_action({
-                                    let profile_id = mode.profile_id.clone();
-                                    cx.listener(move |this, _: &menu::Confirm, window, cx| {
-                                        this.delete_profile(profile_id.clone(), window, cx);
-                                    })
-                                })
-                                .child(
-                                    ListItem::new("delete-profile")
-                                        .toggle_state(
-                                            mode.delete_profile
-                                                .focus_handle
-                                                .contains_focused(window, cx),
-                                        )
-                                        .inset(true)
-                                        .spacing(ListItemSpacing::Sparse)
-                                        .start_slot(
-                                            Icon::new(IconName::Trash)
-                                                .size(IconSize::Small)
-                                                .color(Color::Error),
-                                        )
-                                        .child(Label::new("Delete Profile").color(Color::Error))
-                                        .disabled(builtin_profiles::is_builtin(&mode.profile_id))
-                                        .on_click({
-                                            let profile_id = mode.profile_id.clone();
-                                            cx.listener(move |this, _, window, cx| {
-                                                this.delete_profile(profile_id.clone(), window, cx);
-                                            })
-                                        }),
-                                ),
-                        )
                         .child(ListSeparator)
                         .child(
                             div()
@@ -916,7 +804,6 @@ impl ManageProfilesModal {
         .entry(mode.configure_default_model)
         .entry(mode.configure_tools)
         .entry(mode.configure_mcps)
-        .entry(mode.delete_profile)
         .entry(mode.cancel_item)
     }
 }
@@ -964,7 +851,7 @@ impl Render for ManageProfilesModal {
             .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| this.cancel(window, cx)))
             .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| this.confirm(window, cx)))
             .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
-                this.focus_handle(cx).focus(window, cx);
+                this.focus_handle(cx).focus(window);
             }))
             .on_mouse_down_out(cx.listener(|_this, _, _, cx| cx.emit(DismissEvent)))
             .child(match &self.mode {
@@ -992,7 +879,7 @@ impl Render for ManageProfilesModal {
                         .pb_1()
                         .child(ProfileModalHeader::new(
                             format!("{profile_name} — Configure Built-in Tools"),
-                            Some(IconName::Settings),
+                            Some(IconName::Cog),
                         ))
                         .child(ListSeparator)
                         .child(tool_picker.clone())
@@ -1015,7 +902,7 @@ impl Render for ManageProfilesModal {
                         .pb_1()
                         .child(ProfileModalHeader::new(
                             format!("{profile_name} — Configure Default Model"),
-                            Some(IconName::ZedAgent),
+                            Some(IconName::Ai),
                         ))
                         .child(ListSeparator)
                         .child(v_flex().w(rems(34.)).child(model_picker.clone()))

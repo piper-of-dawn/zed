@@ -1,8 +1,3 @@
----
-title: C++
-description: "Configure C++ language support in Zed, including language servers, formatting, and debugging."
----
-
 # C++
 
 C++ support is available natively in Zed.
@@ -83,7 +78,6 @@ You can pass any number of arguments to clangd. To see a full set of available o
 By default Zed will use the `clangd` language server for formatting C++ code. The Clangd is the same as the `clang-format` CLI tool. To configure this you can add a `.clang-format` file. For example:
 
 ```yaml
-# yaml-language-server: $schema=https://json.schemastore.org/clang-format-21.x.json
 ---
 BasedOnStyle: LLVM
 IndentWidth: 4
@@ -97,9 +91,7 @@ PointerAlignment: Left
 
 See [Clang-Format Style Options](https://clang.llvm.org/docs/ClangFormatStyleOptions.html) for a complete list of options.
 
-You can trigger formatting via {#kb editor::Format} or the `editor: format` action from the command palette or by enabling format on save.
-
-Configure formatting in Settings ({#kb zed::OpenSettings}) under Languages > C++, or add to your settings file:
+You can trigger formatting via {#kb editor::Format} or the `editor: format` action from the command palette or by adding `format_on_save` to your Zed settings:
 
 ```json [settings]
   "languages": {
@@ -114,8 +106,7 @@ Configure formatting in Settings ({#kb zed::OpenSettings}) under Languages > C++
 
 In the root of your project, it is generally common to create a `.clangd` file to set extra configuration.
 
-```yaml
-# yaml-language-server: $schema=https://json.schemastore.org/clangd.json
+```text
 CompileFlags:
   Add:
     - "--include-directory=/path/to/include"
@@ -164,27 +155,4 @@ You can use CodeLLDB or GDB to debug native binaries. (Make sure that your build
     "adapter": "CodeLLDB"
   }
 ]
-```
-
-## Protocol Extensions
-
-Zed currently implements the following `clangd` [extensions](https://clangd.llvm.org/extensions):
-
-### Inactive Regions
-
-Automatically dims inactive sections of code due to preprocessor directives, such as `#if`, `#ifdef`, or `#ifndef` blocks that evaluate to false.
-
-### Switch Between Source and Header Files
-
-Allows switching between corresponding C++ source files (e.g., `.cpp`) and header files (e.g., `.h`).
-by running the command {#action editor::SwitchSourceHeader} from the command palette or by setting
-a keybinding for the `editor::SwitchSourceHeader` action.
-
-```json [keymap]
-{
-  "context": "Editor",
-  "bindings": {
-    "alt-enter": "editor::SwitchSourceHeader"
-  }
-}
 ```

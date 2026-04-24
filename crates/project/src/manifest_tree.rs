@@ -4,7 +4,7 @@
 //! This then is used to provide those locations to language servers & determine locations eligible for toolchain selection.
 
 mod manifest_store;
-pub mod path_trie;
+mod path_trie;
 mod server_tree;
 
 use std::{borrow::Borrow, collections::hash_map::Entry, ops::ControlFlow, sync::Arc};
@@ -59,7 +59,6 @@ impl WorktreeRoots {
                         let path = TriePath::from(entry.path.as_ref());
                         this.roots.remove(&path);
                     }
-                    WorktreeEvent::Deleted | WorktreeEvent::UpdatedRootRepoCommonDir { .. } => {}
                 }
             }),
         })

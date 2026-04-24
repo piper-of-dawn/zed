@@ -1,6 +1,6 @@
 mod models;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Error, Result, anyhow};
 use aws_sdk_bedrockruntime as bedrock;
 pub use aws_sdk_bedrockruntime as bedrock_client;
 use aws_sdk_bedrockruntime::types::InferenceConfiguration;
@@ -16,8 +16,7 @@ pub use bedrock::operation::converse_stream::ConverseStreamInput as BedrockStrea
 pub use bedrock::types::{
     ContentBlock as BedrockRequestContent, ConversationRole as BedrockRole,
     ConverseOutput as BedrockResponse, ConverseStreamOutput as BedrockStreamingResponse,
-    ImageBlock as BedrockImageBlock, ImageFormat as BedrockImageFormat,
-    ImageSource as BedrockImageSource, Message as BedrockMessage,
+    ImageBlock as BedrockImageBlock, Message as BedrockMessage,
     ReasoningContentBlock as BedrockThinkingBlock, ReasoningTextBlock as BedrockThinkingTextBlock,
     ResponseStream as BedrockResponseStream, SystemContentBlock as BedrockSystemContentBlock,
     ToolResultBlock as BedrockToolResultBlock,
@@ -32,48 +31,29 @@ use thiserror::Error;
 
 pub use crate::models::*;
 
-pub const CONTEXT_1M_BETA_HEADER: &str = "context-1m-2025-08-07";
-
 pub async fn stream_completion(
     client: bedrock::Client,
     request: Request,
-) -> Result<BoxStream<'static, Result<BedrockStreamingResponse, anyhow::Error>>, BedrockError> {
+) -> Result<BoxStream<'static, Result<BedrockStreamingResponse, BedrockError>>, Error> {
     let mut response = bedrock::Client::converse_stream(&client)
         .model_id(request.model.clone())
         .set_messages(request.messages.into());
 
-    let mut additional_fields: HashMap<String, Document> = HashMap::new();
-
-    match request.thinking {
-        Some(Thinking::Enabled {
-            budget_tokens: Some(budget_tokens),
-        }) => {
-            let thinking_config = HashMap::from([
-                ("type".to_string(), Document::String("enabled".to_string())),
-                (
-                    "budget_tokens".to_string(),
-                    Document::Number(AwsNumber::PosInt(budget_tokens)),
-                ),
-            ]);
-            additional_fields.insert("thinking".to_string(), Document::from(thinking_config));
-        }
-        Some(Thinking::Adaptive { effort: _ }) => {
-            let thinking_config =
-                HashMap::from([("type".to_string(), Document::String("adaptive".to_string()))]);
-            additional_fields.insert("thinking".to_string(), Document::from(thinking_config));
-        }
-        _ => {}
-    }
-
-    if request.allow_extended_context {
-        additional_fields.insert(
-            "anthropic_beta".to_string(),
-            Document::Array(vec![Document::String(CONTEXT_1M_BETA_HEADER.to_string())]),
-        );
-    }
-
-    if !additional_fields.is_empty() {
-        response = response.additional_model_request_fields(Document::Object(additional_fields));
+    if let Some(Thinking::Enabled {
+        budget_tokens: Some(budget_tokens),
+    }) = request.thinking
+    {
+        let thinking_config = HashMap::from([
+            ("type".to_string(), Document::String("enabled".to_string())),
+            (
+                "budget_tokens".to_string(),
+                Document::Number(AwsNumber::PosInt(budget_tokens)),
+            ),
+        ]);
+        response = response.additional_model_request_fields(Document::Object(HashMap::from([(
+            "thinking".to_string(),
+            Document::from(thinking_config),
+        )])));
     }
 
     if request.tools.as_ref().is_some_and(|t| !t.tools.is_empty()) {
@@ -94,30 +74,10 @@ pub async fn stream_completion(
         }
     }
 
-    let output = response.send().await.map_err(|err| match err {
-        bedrock::error::SdkError::ServiceError(ctx) => {
-            use bedrock::operation::converse_stream::ConverseStreamError;
-            let err = ctx.into_err();
-            match &err {
-                ConverseStreamError::ValidationException(e) => {
-                    BedrockError::Validation(e.message().unwrap_or("validation error").to_string())
-                }
-                ConverseStreamError::ThrottlingException(_) => BedrockError::RateLimited,
-                ConverseStreamError::ServiceUnavailableException(_)
-                | ConverseStreamError::ModelNotReadyException(_) => {
-                    BedrockError::ServiceUnavailable
-                }
-                ConverseStreamError::AccessDeniedException(e) => {
-                    BedrockError::AccessDenied(e.message().unwrap_or("access denied").to_string())
-                }
-                ConverseStreamError::InternalServerException(e) => BedrockError::InternalServer(
-                    e.message().unwrap_or("internal server error").to_string(),
-                ),
-                _ => BedrockError::Other(err.into()),
-            }
-        }
-        other => BedrockError::Other(other.into()),
-    });
+    let output = response
+        .send()
+        .await
+        .context("Failed to send API request to Bedrock");
 
     let stream = Box::pin(stream::unfold(
         output?.stream,
@@ -126,10 +86,10 @@ pub async fn stream_completion(
                 Ok(Some(output)) => Some((Ok(output), stream)),
                 Ok(None) => None,
                 Err(err) => Some((
-                    Err(anyhow!(
-                        "{}",
+                    Err(BedrockError::ClientError(anyhow!(
+                        "{:?}",
                         aws_sdk_bedrockruntime::error::DisplayErrorContext(err)
-                    )),
+                    ))),
                     stream,
                 )),
             }
@@ -185,12 +145,7 @@ pub fn value_to_aws_document(value: &Value) -> Document {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Thinking {
-    Enabled {
-        budget_tokens: Option<u64>,
-    },
-    Adaptive {
-        effort: BedrockAdaptiveThinkingEffort,
-    },
+    Enabled { budget_tokens: Option<u64> },
 }
 
 #[derive(Debug)]
@@ -206,7 +161,6 @@ pub struct Request {
     pub temperature: Option<f32>,
     pub top_k: Option<u32>,
     pub top_p: Option<f32>,
-    pub allow_extended_context: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -216,16 +170,10 @@ pub struct Metadata {
 
 #[derive(Error, Debug)]
 pub enum BedrockError {
-    #[error("{0}")]
-    Validation(String),
-    #[error("rate limited")]
-    RateLimited,
-    #[error("service unavailable")]
-    ServiceUnavailable,
-    #[error("{0}")]
-    AccessDenied(String),
-    #[error("{0}")]
-    InternalServer(String),
+    #[error("client error: {0}")]
+    ClientError(anyhow::Error),
+    #[error("extension error: {0}")]
+    ExtensionError(anyhow::Error),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

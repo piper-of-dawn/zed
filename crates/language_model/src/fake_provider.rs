@@ -5,10 +5,11 @@ use crate::{
     LanguageModelRequest, LanguageModelToolChoice,
 };
 use anyhow::anyhow;
-use futures::{FutureExt, channel::mpsc, future::BoxFuture, stream::BoxStream, stream::StreamExt};
+use futures::{FutureExt, channel::mpsc, future::BoxFuture, stream::BoxStream};
 use gpui::{AnyView, App, AsyncApp, Entity, Task, Window};
 use http_client::Result;
 use parking_lot::Mutex;
+use smol::stream::StreamExt;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering::SeqCst},
@@ -18,7 +19,6 @@ use std::sync::{
 pub struct FakeLanguageModelProvider {
     id: LanguageModelProviderId,
     name: LanguageModelProviderName,
-    models: Vec<Arc<dyn LanguageModel>>,
 }
 
 impl Default for FakeLanguageModelProvider {
@@ -26,7 +26,6 @@ impl Default for FakeLanguageModelProvider {
         Self {
             id: LanguageModelProviderId::from("fake".to_string()),
             name: LanguageModelProviderName::from("Fake".to_string()),
-            models: vec![Arc::new(FakeLanguageModel::default())],
         }
     }
 }
@@ -49,15 +48,15 @@ impl LanguageModelProvider for FakeLanguageModelProvider {
     }
 
     fn default_model(&self, _cx: &App) -> Option<Arc<dyn LanguageModel>> {
-        self.models.first().cloned()
+        Some(Arc::new(FakeLanguageModel::default()))
     }
 
     fn default_fast_model(&self, _cx: &App) -> Option<Arc<dyn LanguageModel>> {
-        self.models.first().cloned()
+        Some(Arc::new(FakeLanguageModel::default()))
     }
 
     fn provided_models(&self, _: &App) -> Vec<Arc<dyn LanguageModel>> {
-        self.models.clone()
+        vec![Arc::new(FakeLanguageModel::default())]
     }
 
     fn is_authenticated(&self, _: &App) -> bool {
@@ -84,16 +83,7 @@ impl LanguageModelProvider for FakeLanguageModelProvider {
 
 impl FakeLanguageModelProvider {
     pub fn new(id: LanguageModelProviderId, name: LanguageModelProviderName) -> Self {
-        Self {
-            id,
-            name,
-            models: vec![Arc::new(FakeLanguageModel::default())],
-        }
-    }
-
-    pub fn with_models(mut self, models: Vec<Arc<dyn LanguageModel>>) -> Self {
-        self.models = models;
-        self
+        Self { id, name }
     }
 
     pub fn test_model(&self) -> FakeLanguageModel {
@@ -110,8 +100,6 @@ pub struct ToolUseRequest {
 }
 
 pub struct FakeLanguageModel {
-    id: LanguageModelId,
-    name: LanguageModelName,
     provider_id: LanguageModelProviderId,
     provider_name: LanguageModelProviderName,
     current_completion_txs: Mutex<
@@ -123,55 +111,26 @@ pub struct FakeLanguageModel {
         )>,
     >,
     forbid_requests: AtomicBool,
-    supports_thinking: AtomicBool,
-    supports_streaming_tools: AtomicBool,
 }
 
 impl Default for FakeLanguageModel {
     fn default() -> Self {
         Self {
-            id: LanguageModelId::from("fake".to_string()),
-            name: LanguageModelName::from("Fake".to_string()),
             provider_id: LanguageModelProviderId::from("fake".to_string()),
             provider_name: LanguageModelProviderName::from("Fake".to_string()),
             current_completion_txs: Mutex::new(Vec::new()),
             forbid_requests: AtomicBool::new(false),
-            supports_thinking: AtomicBool::new(false),
-            supports_streaming_tools: AtomicBool::new(false),
         }
     }
 }
 
 impl FakeLanguageModel {
-    pub fn with_id_and_thinking(
-        provider_id: &str,
-        id: &str,
-        name: &str,
-        supports_thinking: bool,
-    ) -> Self {
-        Self {
-            id: LanguageModelId::from(id.to_string()),
-            name: LanguageModelName::from(name.to_string()),
-            provider_id: LanguageModelProviderId::from(provider_id.to_string()),
-            supports_thinking: AtomicBool::new(supports_thinking),
-            ..Default::default()
-        }
-    }
-
     pub fn allow_requests(&self) {
         self.forbid_requests.store(false, SeqCst);
     }
 
     pub fn forbid_requests(&self) {
         self.forbid_requests.store(true, SeqCst);
-    }
-
-    pub fn set_supports_thinking(&self, supports: bool) {
-        self.supports_thinking.store(supports, SeqCst);
-    }
-
-    pub fn set_supports_streaming_tools(&self, supports: bool) {
-        self.supports_streaming_tools.store(supports, SeqCst);
     }
 
     pub fn pending_completions(&self) -> Vec<LanguageModelRequest> {
@@ -256,11 +215,11 @@ impl FakeLanguageModel {
 
 impl LanguageModel for FakeLanguageModel {
     fn id(&self) -> LanguageModelId {
-        self.id.clone()
+        LanguageModelId::from("fake".to_string())
     }
 
     fn name(&self) -> LanguageModelName {
-        self.name.clone()
+        LanguageModelName::from("Fake".to_string())
     }
 
     fn provider_id(&self) -> LanguageModelProviderId {
@@ -281,14 +240,6 @@ impl LanguageModel for FakeLanguageModel {
 
     fn supports_images(&self) -> bool {
         false
-    }
-
-    fn supports_thinking(&self) -> bool {
-        self.supports_thinking.load(SeqCst)
-    }
-
-    fn supports_streaming_tools(&self) -> bool {
-        self.supports_streaming_tools.load(SeqCst)
     }
 
     fn telemetry_id(&self) -> String {

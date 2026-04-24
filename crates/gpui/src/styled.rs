@@ -1,9 +1,8 @@
 use crate::{
-    self as gpui, AbsoluteLength, AlignContent, AlignItems, AlignSelf, BorderStyle, CursorStyle,
-    DefiniteLength, Display, Fill, FlexDirection, FlexWrap, Font, FontFeatures, FontStyle,
-    FontWeight, GridPlacement, GridTemplate, Hsla, JustifyContent, Length, SharedString,
-    StrikethroughStyle, StyleRefinement, TemplateColumnMinSize, TextAlign, TextOverflow,
-    TextStyleRefinement, UnderlineStyle, WhiteSpace, px, relative, rems,
+    self as gpui, AbsoluteLength, AlignContent, AlignItems, BorderStyle, CursorStyle,
+    DefiniteLength, Display, Fill, FlexDirection, FlexWrap, Font, FontStyle, FontWeight,
+    GridPlacement, Hsla, JustifyContent, Length, SharedString, StrikethroughStyle, StyleRefinement,
+    TextAlign, TextOverflow, TextStyleRefinement, UnderlineStyle, WhiteSpace, px, relative, rems,
 };
 pub use gpui_macros::{
     border_style_methods, box_shadow_style_methods, cursor_style_methods, margin_style_methods,
@@ -14,9 +13,8 @@ const ELLIPSIS: SharedString = SharedString::new_static("…");
 
 /// A trait for elements that can be styled.
 /// Use this to opt-in to a utility CSS-like styling API.
-// gate on rust-analyzer so rust-analyzer never needs to expand this macro, it takes up to 10 seconds to expand due to inefficiencies in rust-analyzers proc-macro srv
 #[cfg_attr(
-    all(any(feature = "inspector", debug_assertions), not(rust_analyzer)),
+    any(feature = "inspector", debug_assertions),
     gpui_macros::derive_inspector_reflection
 )]
 pub trait Styled: Sized {
@@ -64,41 +62,43 @@ pub trait Styled: Sized {
     /// Sets the whitespace of the element to `normal`.
     /// [Docs](https://tailwindcss.com/docs/whitespace#normal)
     fn whitespace_normal(mut self) -> Self {
-        self.text_style().white_space = Some(WhiteSpace::Normal);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .white_space = Some(WhiteSpace::Normal);
         self
     }
 
     /// Sets the whitespace of the element to `nowrap`.
     /// [Docs](https://tailwindcss.com/docs/whitespace#nowrap)
     fn whitespace_nowrap(mut self) -> Self {
-        self.text_style().white_space = Some(WhiteSpace::Nowrap);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .white_space = Some(WhiteSpace::Nowrap);
         self
     }
 
-    /// Sets the truncate overflowing text with an ellipsis (…) at the end if needed.
+    /// Sets the truncate overflowing text with an ellipsis (…) if needed.
     /// [Docs](https://tailwindcss.com/docs/text-overflow#ellipsis)
     fn text_ellipsis(mut self) -> Self {
-        self.text_style().text_overflow = Some(TextOverflow::Truncate(ELLIPSIS));
-        self
-    }
-
-    /// Sets the truncate overflowing text with an ellipsis (…) at the start if needed.
-    /// Typically more adequate for file paths where the end is more important than the beginning.
-    /// Note: This doesn't exist in Tailwind CSS.
-    fn text_ellipsis_start(mut self) -> Self {
-        self.text_style().text_overflow = Some(TextOverflow::TruncateStart(ELLIPSIS));
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .text_overflow = Some(TextOverflow::Truncate(ELLIPSIS));
         self
     }
 
     /// Sets the text overflow behavior of the element.
     fn text_overflow(mut self, overflow: TextOverflow) -> Self {
-        self.text_style().text_overflow = Some(overflow);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .text_overflow = Some(overflow);
         self
     }
 
     /// Set the text alignment of the element.
     fn text_align(mut self, align: TextAlign) -> Self {
-        self.text_style().text_align = Some(align);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .text_align = Some(align);
         self
     }
 
@@ -126,7 +126,7 @@ pub trait Styled: Sized {
     /// Sets number of lines to show before truncating the text.
     /// [Docs](https://tailwindcss.com/docs/line-clamp)
     fn line_clamp(mut self, lines: usize) -> Self {
-        let mut text_style = self.text_style();
+        let mut text_style = self.text_style().get_or_insert_with(Default::default);
         text_style.line_clamp = Some(lines);
         self.overflow_hidden()
     }
@@ -208,13 +208,6 @@ pub trait Styled: Sized {
         self
     }
 
-    /// Sets the element to prevent a flex item from growing.
-    /// [Docs](https://tailwindcss.com/docs/flex-grow#dont-grow)
-    fn flex_grow_0(mut self) -> Self {
-        self.style().flex_grow = Some(0.);
-        self
-    }
-
     /// Sets the element to allow a flex item to shrink if needed.
     /// [Docs](https://tailwindcss.com/docs/flex-shrink)
     fn flex_shrink(mut self) -> Self {
@@ -275,62 +268,6 @@ pub trait Styled: Sized {
     /// [Docs](https://tailwindcss.com/docs/align-items#baseline)
     fn items_baseline(mut self) -> Self {
         self.style().align_items = Some(AlignItems::Baseline);
-        self
-    }
-
-    /// Sets the element to stretch flex items to fill the available space along the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-items#stretch)
-    fn items_stretch(mut self) -> Self {
-        self.style().align_items = Some(AlignItems::Stretch);
-        self
-    }
-
-    /// Sets how this specific element is aligned along the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-self#start)
-    fn self_start(mut self) -> Self {
-        self.style().align_self = Some(AlignSelf::Start);
-        self
-    }
-
-    /// Sets this element to align against the end of the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-self#end)
-    fn self_end(mut self) -> Self {
-        self.style().align_self = Some(AlignSelf::End);
-        self
-    }
-
-    /// Sets this element to align against the start of the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-self#start)
-    fn self_flex_start(mut self) -> Self {
-        self.style().align_self = Some(AlignSelf::FlexStart);
-        self
-    }
-
-    /// Sets this element to align against the end of the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-self#end)
-    fn self_flex_end(mut self) -> Self {
-        self.style().align_self = Some(AlignSelf::FlexEnd);
-        self
-    }
-
-    /// Sets this element to align along the center of the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-self#center)
-    fn self_center(mut self) -> Self {
-        self.style().align_self = Some(AlignSelf::Center);
-        self
-    }
-
-    /// Sets this element to align along the baseline of the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-self#baseline)
-    fn self_baseline(mut self) -> Self {
-        self.style().align_self = Some(AlignSelf::Baseline);
-        self
-    }
-
-    /// Sets this element to stretch to fill the available space along the container's cross axis.
-    /// [Docs](https://tailwindcss.com/docs/align-self#stretch)
-    fn self_stretch(mut self) -> Self {
-        self.style().align_self = Some(AlignSelf::Stretch);
         self
     }
 
@@ -440,20 +377,6 @@ pub trait Styled: Sized {
         self
     }
 
-    /// Sets the aspect ratio of the element.
-    /// [Docs](https://tailwindcss.com/docs/aspect-ratio)
-    fn aspect_ratio(mut self, ratio: f32) -> Self {
-        self.style().aspect_ratio = Some(ratio);
-        self
-    }
-
-    /// Sets the aspect ratio of the element to 1/1 – equal width and height.
-    /// [Docs](https://tailwindcss.com/docs/aspect-ratio)
-    fn aspect_square(mut self) -> Self {
-        self.style().aspect_ratio = Some(1.0);
-        self
-    }
-
     /// Sets the background color of the element.
     fn bg<F>(mut self, fill: F) -> Self
     where
@@ -471,7 +394,7 @@ pub trait Styled: Sized {
     }
 
     /// Returns a mutable reference to the text style that has been configured on this element.
-    fn text_style(&mut self) -> &mut TextStyleRefinement {
+    fn text_style(&mut self) -> &mut Option<TextStyleRefinement> {
         let style: &mut StyleRefinement = self.style();
         &mut style.text
     }
@@ -480,7 +403,7 @@ pub trait Styled: Sized {
     ///
     /// This value cascades to its child elements.
     fn text_color(mut self, color: impl Into<Hsla>) -> Self {
-        self.text_style().color = Some(color.into());
+        self.text_style().get_or_insert_with(Default::default).color = Some(color.into());
         self
     }
 
@@ -488,7 +411,9 @@ pub trait Styled: Sized {
     ///
     /// This value cascades to its child elements.
     fn font_weight(mut self, weight: FontWeight) -> Self {
-        self.text_style().font_weight = Some(weight);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_weight = Some(weight);
         self
     }
 
@@ -496,7 +421,9 @@ pub trait Styled: Sized {
     ///
     /// This value cascades to its child elements.
     fn text_bg(mut self, bg: impl Into<Hsla>) -> Self {
-        self.text_style().background_color = Some(bg.into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .background_color = Some(bg.into());
         self
     }
 
@@ -504,77 +431,97 @@ pub trait Styled: Sized {
     ///
     /// This value cascades to its child elements.
     fn text_size(mut self, size: impl Into<AbsoluteLength>) -> Self {
-        self.text_style().font_size = Some(size.into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(size.into());
         self
     }
 
     /// Sets the text size to 'extra small'.
     /// [Docs](https://tailwindcss.com/docs/font-size#setting-the-font-size)
     fn text_xs(mut self) -> Self {
-        self.text_style().font_size = Some(rems(0.75).into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(rems(0.75).into());
         self
     }
 
     /// Sets the text size to 'small'.
     /// [Docs](https://tailwindcss.com/docs/font-size#setting-the-font-size)
     fn text_sm(mut self) -> Self {
-        self.text_style().font_size = Some(rems(0.875).into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(rems(0.875).into());
         self
     }
 
     /// Sets the text size to 'base'.
     /// [Docs](https://tailwindcss.com/docs/font-size#setting-the-font-size)
     fn text_base(mut self) -> Self {
-        self.text_style().font_size = Some(rems(1.0).into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(rems(1.0).into());
         self
     }
 
     /// Sets the text size to 'large'.
     /// [Docs](https://tailwindcss.com/docs/font-size#setting-the-font-size)
     fn text_lg(mut self) -> Self {
-        self.text_style().font_size = Some(rems(1.125).into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(rems(1.125).into());
         self
     }
 
     /// Sets the text size to 'extra large'.
     /// [Docs](https://tailwindcss.com/docs/font-size#setting-the-font-size)
     fn text_xl(mut self) -> Self {
-        self.text_style().font_size = Some(rems(1.25).into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(rems(1.25).into());
         self
     }
 
     /// Sets the text size to 'extra extra large'.
     /// [Docs](https://tailwindcss.com/docs/font-size#setting-the-font-size)
     fn text_2xl(mut self) -> Self {
-        self.text_style().font_size = Some(rems(1.5).into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(rems(1.5).into());
         self
     }
 
     /// Sets the text size to 'extra extra extra large'.
     /// [Docs](https://tailwindcss.com/docs/font-size#setting-the-font-size)
     fn text_3xl(mut self) -> Self {
-        self.text_style().font_size = Some(rems(1.875).into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_size = Some(rems(1.875).into());
         self
     }
 
     /// Sets the font style of the element to italic.
     /// [Docs](https://tailwindcss.com/docs/font-style#italicizing-text)
     fn italic(mut self) -> Self {
-        self.text_style().font_style = Some(FontStyle::Italic);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_style = Some(FontStyle::Italic);
         self
     }
 
     /// Sets the font style of the element to normal (not italic).
     /// [Docs](https://tailwindcss.com/docs/font-style#displaying-text-normally)
     fn not_italic(mut self) -> Self {
-        self.text_style().font_style = Some(FontStyle::Normal);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_style = Some(FontStyle::Normal);
         self
     }
 
     /// Sets the text decoration to underline.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-line#underling-text)
     fn underline(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         style.underline = Some(UnderlineStyle {
             thickness: px(1.),
             ..Default::default()
@@ -585,7 +532,7 @@ pub trait Styled: Sized {
     /// Sets the decoration of the text to have a line through it.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-line#adding-a-line-through-text)
     fn line_through(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         style.strikethrough = Some(StrikethroughStyle {
             thickness: px(1.),
             ..Default::default()
@@ -597,13 +544,15 @@ pub trait Styled: Sized {
     ///
     /// This value cascades to its child elements.
     fn text_decoration_none(mut self) -> Self {
-        self.text_style().underline = None;
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .underline = None;
         self
     }
 
     /// Sets the color for the underline on this element
     fn text_decoration_color(mut self, color: impl Into<Hsla>) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.color = Some(color.into());
         self
@@ -612,7 +561,7 @@ pub trait Styled: Sized {
     /// Sets the text decoration style to a solid line.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-style)
     fn text_decoration_solid(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.wavy = false;
         self
@@ -621,7 +570,7 @@ pub trait Styled: Sized {
     /// Sets the text decoration style to a wavy line.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-style)
     fn text_decoration_wavy(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.wavy = true;
         self
@@ -630,7 +579,7 @@ pub trait Styled: Sized {
     /// Sets the text decoration to be 0px thick.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-thickness)
     fn text_decoration_0(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.thickness = px(0.);
         self
@@ -639,7 +588,7 @@ pub trait Styled: Sized {
     /// Sets the text decoration to be 1px thick.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-thickness)
     fn text_decoration_1(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.thickness = px(1.);
         self
@@ -648,7 +597,7 @@ pub trait Styled: Sized {
     /// Sets the text decoration to be 2px thick.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-thickness)
     fn text_decoration_2(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.thickness = px(2.);
         self
@@ -657,7 +606,7 @@ pub trait Styled: Sized {
     /// Sets the text decoration to be 4px thick.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-thickness)
     fn text_decoration_4(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.thickness = px(4.);
         self
@@ -666,7 +615,7 @@ pub trait Styled: Sized {
     /// Sets the text decoration to be 8px thick.
     /// [Docs](https://tailwindcss.com/docs/text-decoration-thickness)
     fn text_decoration_8(mut self) -> Self {
-        let style = self.text_style();
+        let style = self.text_style().get_or_insert_with(Default::default);
         let underline = style.underline.get_or_insert_with(Default::default);
         underline.thickness = px(8.);
         self
@@ -674,13 +623,9 @@ pub trait Styled: Sized {
 
     /// Sets the font family of this element and its children.
     fn font_family(mut self, family_name: impl Into<SharedString>) -> Self {
-        self.text_style().font_family = Some(family_name.into());
-        self
-    }
-
-    /// Sets the font features of this element and its children.
-    fn font_features(mut self, features: FontFeatures) -> Self {
-        self.text_style().font_features = Some(features);
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .font_family = Some(family_name.into());
         self
     }
 
@@ -694,7 +639,7 @@ pub trait Styled: Sized {
             style,
         } = font;
 
-        let text_style = self.text_style();
+        let text_style = self.text_style().get_or_insert_with(Default::default);
         text_style.font_family = Some(family);
         text_style.font_features = Some(features);
         text_style.font_weight = Some(weight);
@@ -706,7 +651,9 @@ pub trait Styled: Sized {
 
     /// Sets the line height of this element and its children.
     fn line_height(mut self, line_height: impl Into<DefiniteLength>) -> Self {
-        self.text_style().line_height = Some(line_height.into());
+        self.text_style()
+            .get_or_insert_with(Default::default)
+            .line_height = Some(line_height.into());
         self
     }
 
@@ -718,38 +665,13 @@ pub trait Styled: Sized {
 
     /// Sets the grid columns of this element.
     fn grid_cols(mut self, cols: u16) -> Self {
-        self.style().grid_cols = Some(GridTemplate {
-            repeat: cols,
-            min_size: TemplateColumnMinSize::Zero,
-        });
-        self
-    }
-
-    /// Sets the grid columns with min-content minimum sizing.
-    /// Unlike grid_cols, it won't shrink to width 0 in AvailableSpace::MinContent constraints.
-    fn grid_cols_min_content(mut self, cols: u16) -> Self {
-        self.style().grid_cols = Some(GridTemplate {
-            repeat: cols,
-            min_size: TemplateColumnMinSize::MinContent,
-        });
-        self
-    }
-
-    /// Sets the grid columns with max-content maximum sizing for content-based column widths.
-    fn grid_cols_max_content(mut self, cols: u16) -> Self {
-        self.style().grid_cols = Some(GridTemplate {
-            repeat: cols,
-            min_size: TemplateColumnMinSize::MaxContent,
-        });
+        self.style().grid_cols = Some(cols);
         self
     }
 
     /// Sets the grid rows of this element.
     fn grid_rows(mut self, rows: u16) -> Self {
-        self.style().grid_rows = Some(GridTemplate {
-            repeat: rows,
-            min_size: TemplateColumnMinSize::Zero,
-        });
+        self.style().grid_rows = Some(rows);
         self
     }
 

@@ -1,6 +1,6 @@
 use crate::{
-    AbsoluteLength, App, Bounds, DefiniteLength, Edges, GridTemplate, Length, Pixels, Point, Size,
-    Style, Window, point, size,
+    AbsoluteLength, App, Bounds, DefiniteLength, Edges, Length, Pixels, Point, Size, Style, Window,
+    point, size,
 };
 use collections::{FxHashMap, FxHashSet};
 use stacksafe::{StackSafe, stacksafe};
@@ -8,7 +8,6 @@ use std::{fmt::Debug, ops::Range};
 use taffy::{
     TaffyTree, TraversePartialTree as _,
     geometry::{Point as TaffyPoint, Rect as TaffyRect, Size as TaffySize},
-    prelude::{max_content, min_content},
     style::AvailableSpace as TaffyAvailableSpace,
     tree::NodeId,
 };
@@ -308,31 +307,11 @@ impl ToTaffy<taffy::style::Style> for Style {
         }
 
         fn to_grid_repeat<T: taffy::style::CheapCloneStr>(
-            unit: &Option<GridTemplate>,
+            unit: &Option<u16>,
         ) -> Vec<taffy::GridTemplateComponent<T>> {
-            unit.map(|template| {
-                match template.min_size {
-                    // grid-template-*: repeat(<number>, minmax(0, 1fr));
-                    crate::TemplateColumnMinSize::Zero => {
-                        vec![repeat(template.repeat, vec![minmax(length(0.0), fr(1.0))])]
-                    }
-                    // grid-template-*: repeat(<number>, minmax(min-content, 1fr));
-                    crate::TemplateColumnMinSize::MinContent => {
-                        vec![repeat(
-                            template.repeat,
-                            vec![minmax(min_content(), fr(1.0))],
-                        )]
-                    }
-                    // grid-template-*: repeat(<number>, minmax(0, max-content))
-                    crate::TemplateColumnMinSize::MaxContent => {
-                        vec![repeat(
-                            template.repeat,
-                            vec![minmax(length(0.0), max_content())],
-                        )]
-                    }
-                }
-            })
-            .unwrap_or_default()
+            // grid-template-columns: repeat(<number>, minmax(0, 1fr));
+            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
+                .unwrap_or_default()
         }
 
         taffy::style::Style {

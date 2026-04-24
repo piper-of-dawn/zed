@@ -1,7 +1,7 @@
 use collections::BTreeMap;
 use gpui::HighlightStyle;
-use language::{Chunk, LanguageAwareStyling};
-use multi_buffer::{MultiBufferChunks, MultiBufferOffset, MultiBufferSnapshot, ToOffset as _};
+use language::Chunk;
+use multi_buffer::{MultiBufferChunks, MultiBufferSnapshot, ToOffset as _};
 use std::{
     cmp,
     iter::{self, Peekable},
@@ -9,61 +9,52 @@ use std::{
     vec,
 };
 
-use crate::display_map::{HighlightKey, SemanticTokensHighlights, TextHighlights};
+use crate::display_map::{HighlightKey, TextHighlights};
 
 pub struct CustomHighlightsChunks<'a> {
     buffer_chunks: MultiBufferChunks<'a>,
     buffer_chunk: Option<Chunk<'a>>,
-    offset: MultiBufferOffset,
+    offset: usize,
     multibuffer_snapshot: &'a MultiBufferSnapshot,
 
     highlight_endpoints: Peekable<vec::IntoIter<HighlightEndpoint>>,
     active_highlights: BTreeMap<HighlightKey, HighlightStyle>,
     text_highlights: Option<&'a TextHighlights>,
-    semantic_token_highlights: Option<&'a SemanticTokensHighlights>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 struct HighlightEndpoint {
-    offset: MultiBufferOffset,
+    offset: usize,
     tag: HighlightKey,
     style: Option<HighlightStyle>,
 }
 
 impl<'a> CustomHighlightsChunks<'a> {
-    #[ztracing::instrument(skip_all)]
     pub fn new(
-        range: Range<MultiBufferOffset>,
-        language_aware: LanguageAwareStyling,
+        range: Range<usize>,
+        language_aware: bool,
         text_highlights: Option<&'a TextHighlights>,
-        semantic_token_highlights: Option<&'a SemanticTokensHighlights>,
         multibuffer_snapshot: &'a MultiBufferSnapshot,
     ) -> Self {
         Self {
             buffer_chunks: multibuffer_snapshot.chunks(range.clone(), language_aware),
             buffer_chunk: None,
             offset: range.start,
+
             text_highlights,
             highlight_endpoints: create_highlight_endpoints(
                 &range,
                 text_highlights,
-                semantic_token_highlights,
                 multibuffer_snapshot,
             ),
             active_highlights: Default::default(),
             multibuffer_snapshot,
-            semantic_token_highlights,
         }
     }
 
-    #[ztracing::instrument(skip_all)]
-    pub fn seek(&mut self, new_range: Range<MultiBufferOffset>) {
-        self.highlight_endpoints = create_highlight_endpoints(
-            &new_range,
-            self.text_highlights,
-            self.semantic_token_highlights,
-            self.multibuffer_snapshot,
-        );
+    pub fn seek(&mut self, new_range: Range<usize>) {
+        self.highlight_endpoints =
+            create_highlight_endpoints(&new_range, self.text_highlights, self.multibuffer_snapshot);
         self.offset = new_range.start;
         self.buffer_chunks.seek(new_range);
         self.buffer_chunk.take();
@@ -72,9 +63,8 @@ impl<'a> CustomHighlightsChunks<'a> {
 }
 
 fn create_highlight_endpoints(
-    range: &Range<MultiBufferOffset>,
+    range: &Range<usize>,
     text_highlights: Option<&TextHighlights>,
-    semantic_token_highlights: Option<&SemanticTokensHighlights>,
     buffer: &MultiBufferSnapshot,
 ) -> iter::Peekable<vec::IntoIter<HighlightEndpoint>> {
     let mut highlight_endpoints = Vec::new();
@@ -85,18 +75,22 @@ fn create_highlight_endpoints(
             let style = text_highlights.0;
             let ranges = &text_highlights.1;
 
-            let start_ix = ranges
-                .binary_search_by(|probe| probe.end.cmp(&start, buffer).then(cmp::Ordering::Less))
-                .unwrap_or_else(|i| i);
-            let end_ix = ranges[start_ix..]
-                .binary_search_by(|probe| {
-                    probe.start.cmp(&end, buffer).then(cmp::Ordering::Greater)
-                })
-                .unwrap_or_else(|i| i);
+            let start_ix = match ranges.binary_search_by(|probe| {
+                let cmp = probe.end.cmp(&start, buffer);
+                if cmp.is_gt() {
+                    cmp::Ordering::Greater
+                } else {
+                    cmp::Ordering::Less
+                }
+            }) {
+                Ok(i) | Err(i) => i,
+            };
 
-            highlight_endpoints.reserve(2 * end_ix);
+            for range in &ranges[start_ix..] {
+                if range.start.cmp(&end, buffer).is_ge() {
+                    break;
+                }
 
-            for range in &ranges[start_ix..][..end_ix] {
                 let start = range.start.to_offset(buffer);
                 let end = range.end.to_offset(buffer);
                 if start == end {
@@ -114,58 +108,16 @@ fn create_highlight_endpoints(
                 });
             }
         }
+        highlight_endpoints.sort();
     }
-    if let Some(semantic_token_highlights) = semantic_token_highlights {
-        let start = buffer.anchor_after(range.start);
-        let end = buffer.anchor_after(range.end);
-        for buffer_id in buffer.buffer_ids_for_range(range.clone()) {
-            let Some((semantic_token_highlights, interner)) =
-                semantic_token_highlights.get(&buffer_id)
-            else {
-                continue;
-            };
-            let start_ix = semantic_token_highlights
-                .binary_search_by(|probe| {
-                    probe
-                        .range
-                        .end
-                        .cmp(&start, buffer)
-                        .then(cmp::Ordering::Less)
-                })
-                .unwrap_or_else(|i| i);
-            for token in &semantic_token_highlights[start_ix..] {
-                if token.range.start.cmp(&end, buffer).is_ge() {
-                    break;
-                }
-
-                let start = token.range.start.to_offset(buffer);
-                let end = token.range.end.to_offset(buffer);
-                if start == end {
-                    continue;
-                }
-                highlight_endpoints.push(HighlightEndpoint {
-                    offset: start,
-                    tag: HighlightKey::SemanticToken,
-                    style: Some(interner[token.style]),
-                });
-                highlight_endpoints.push(HighlightEndpoint {
-                    offset: end,
-                    tag: HighlightKey::SemanticToken,
-                    style: None,
-                });
-            }
-        }
-    }
-    highlight_endpoints.sort();
     highlight_endpoints.into_iter().peekable()
 }
 
 impl<'a> Iterator for CustomHighlightsChunks<'a> {
     type Item = Chunk<'a>;
 
-    #[ztracing::instrument(skip_all)]
     fn next(&mut self) -> Option<Self::Item> {
-        let mut next_highlight_endpoint = MultiBufferOffset(usize::MAX);
+        let mut next_highlight_endpoint = usize::MAX;
         while let Some(endpoint) = self.highlight_endpoints.peek().copied() {
             if endpoint.offset <= self.offset {
                 if let Some(style) = endpoint.style {
@@ -195,18 +147,15 @@ impl<'a> Iterator for CustomHighlightsChunks<'a> {
         let mask = 1u128.unbounded_shl(split_idx as u32).wrapping_sub(1);
         let chars = chunk.chars & mask;
         let tabs = chunk.tabs & mask;
-        let newlines = chunk.newlines & mask;
         let mut prefix = Chunk {
             text: prefix,
             chars,
             tabs,
-            newlines,
             ..chunk.clone()
         };
 
         chunk.chars = chunk.chars.unbounded_shr(split_idx as u32);
         chunk.tabs = chunk.tabs.unbounded_shr(split_idx as u32);
-        chunk.newlines = chunk.newlines.unbounded_shr(split_idx as u32);
         chunk.text = suffix;
         if !self.active_highlights.is_empty() {
             prefix.highlight_style = self
@@ -230,13 +179,12 @@ impl Ord for HighlightEndpoint {
         self.offset
             .cmp(&other.offset)
             .then_with(|| self.style.is_some().cmp(&other.style.is_some()))
-            .then_with(|| self.tag.cmp(&other.tag))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{any::TypeId, sync::Arc};
 
     use super::*;
     use crate::MultiBuffer;
@@ -276,22 +224,20 @@ mod tests {
             let range_count = rng.random_range(1..10);
             let text = buffer_snapshot.text();
             for _ in 0..range_count {
-                if buffer_snapshot.len() == MultiBufferOffset(0) {
+                if buffer_snapshot.len() == 0 {
                     continue;
                 }
 
-                let mut start = rng.random_range(
-                    MultiBufferOffset(0)..=buffer_snapshot.len().saturating_sub_usize(10),
-                );
+                let mut start = rng.random_range(0..=buffer_snapshot.len().saturating_sub(10));
 
-                while !text.is_char_boundary(start.0) {
-                    start = start.saturating_sub_usize(1);
+                while !text.is_char_boundary(start) {
+                    start = start.saturating_sub(1);
                 }
 
-                let end_end = buffer_snapshot.len().min(start + 100usize);
+                let end_end = buffer_snapshot.len().min(start + 100);
                 let mut end = rng.random_range(start..=end_end);
-                while !text.is_char_boundary(end.0) {
-                    end = end.saturating_sub_usize(1);
+                while !text.is_char_boundary(end) {
+                    end = end.saturating_sub(1);
                 }
 
                 if start < end {
@@ -302,20 +248,13 @@ mod tests {
                 ranges.push(start_anchor..end_anchor);
             }
 
-            highlights.insert(HighlightKey::Editor, Arc::new((style, ranges)));
+            let type_id = TypeId::of::<()>(); // Simple type ID for testing
+            highlights.insert(HighlightKey::Type(type_id), Arc::new((style, ranges)));
         }
 
         // Get all chunks and verify their bitmaps
-        let chunks = CustomHighlightsChunks::new(
-            MultiBufferOffset(0)..buffer_snapshot.len(),
-            LanguageAwareStyling {
-                tree_sitter: false,
-                diagnostics: false,
-            },
-            None,
-            None,
-            &buffer_snapshot,
-        );
+        let chunks =
+            CustomHighlightsChunks::new(0..buffer_snapshot.len(), false, None, &buffer_snapshot);
 
         for chunk in chunks {
             let chunk_text = chunk.text;

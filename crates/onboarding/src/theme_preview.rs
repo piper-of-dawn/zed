@@ -87,13 +87,13 @@ impl ThemePreviewTile {
         let colors = theme.colors();
         let syntax = theme.syntax();
 
-        let keyword_color = syntax.style_for_name("keyword").and_then(|s| s.color);
-        let function_color = syntax.style_for_name("function").and_then(|s| s.color);
-        let string_color = syntax.style_for_name("string").and_then(|s| s.color);
-        let comment_color = syntax.style_for_name("comment").and_then(|s| s.color);
-        let variable_color = syntax.style_for_name("variable").and_then(|s| s.color);
-        let type_color = syntax.style_for_name("type").and_then(|s| s.color);
-        let punctuation_color = syntax.style_for_name("punctuation").and_then(|s| s.color);
+        let keyword_color = syntax.get("keyword").color;
+        let function_color = syntax.get("function").color;
+        let string_color = syntax.get("string").color;
+        let comment_color = syntax.get("comment").color;
+        let variable_color = syntax.get("variable").color;
+        let type_color = syntax.get("type").color;
+        let punctuation_color = syntax.get("punctuation").color;
 
         let syntax_colors = [
             keyword_color,
@@ -129,7 +129,7 @@ impl ThemePreviewTile {
             syntax_colors[idx].unwrap_or(colors.text)
         };
 
-        let line_count = 10;
+        let line_count = 13;
 
         let lines = (0..line_count)
             .map(|line_idx| {
@@ -147,7 +147,7 @@ impl ThemePreviewTile {
                     })
                     .collect::<Vec<_>>();
 
-                h_flex().gap_0p5().ml(relative(indent)).children(blocks)
+                h_flex().gap(px(2.)).ml(relative(indent)).children(blocks)
             })
             .collect::<Vec<_>>();
 
@@ -160,16 +160,14 @@ impl ThemePreviewTile {
         width: impl Into<Length> + Clone,
         skeleton_height: impl Into<Length>,
     ) -> impl IntoElement {
-        v_flex()
+        div()
             .h_full()
             .w(width)
-            .p_2()
-            .gap_1()
+            .border_r(px(1.))
+            .border_color(colors.border_transparent)
             .bg(colors.panel_background)
-            .children(Self::render_sidebar_skeleton_items(
-                seed,
-                colors,
-                skeleton_height.into(),
+            .child(v_flex().p_2().size_full().gap_1().children(
+                Self::render_sidebar_skeleton_items(seed, colors, skeleton_height.into()),
             ))
     }
 
@@ -178,16 +176,18 @@ impl ThemePreviewTile {
         theme: Arc<Theme>,
         skeleton_height: impl Into<Length>,
     ) -> impl IntoElement {
-        div()
-            .p_2()
-            .size_full()
-            .overflow_hidden()
-            .bg(theme.colors().editor_background)
-            .child(Self::render_pseudo_code_skeleton(
-                seed,
-                theme,
-                skeleton_height.into(),
-            ))
+        v_flex().h_full().flex_grow().child(
+            div()
+                .size_full()
+                .overflow_hidden()
+                .bg(theme.colors().editor_background)
+                .p_2()
+                .child(Self::render_pseudo_code_skeleton(
+                    seed,
+                    theme,
+                    skeleton_height.into(),
+                )),
+        )
     }
 
     pub fn render_editor(
@@ -197,8 +197,8 @@ impl ThemePreviewTile {
         skeleton_height: impl Into<Length> + Clone,
     ) -> impl IntoElement {
         div()
-            .flex()
             .size_full()
+            .flex()
             .bg(theme.colors().background.alpha(1.00))
             .child(Self::render_sidebar(
                 seed,

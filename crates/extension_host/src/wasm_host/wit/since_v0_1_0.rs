@@ -11,7 +11,7 @@ use gpui::BackgroundExecutor;
 use language::LanguageName;
 use language::{BinaryStatus, language_settings::AllLanguageSettings};
 use project::project_settings::ProjectSettings;
-use semver::Version;
+use semantic_version::SemanticVersion;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
@@ -21,23 +21,19 @@ use util::rel_path::RelPath;
 use util::{archive::extract_zip, fs::make_file_executable, maybe};
 use wasmtime::component::{Linker, Resource};
 
-use super::{latest, since_v0_6_0};
+use super::latest;
 
-pub const MIN_VERSION: Version = Version::new(0, 1, 0);
+pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 1, 0);
 
 wasmtime::component::bindgen!({
-    imports: {
-        default: async | trappable,
-    },
-    exports: {
-        default: async,
-    },
+    async: true,
+    trappable_imports: true,
     path: "../extension_api/wit/since_v0.1.0",
     with: {
          "worktree": ExtensionWorktree,
          "key-value-store": ExtensionKeyValueStore,
          "zed:extension/http-client/http-response-stream": ExtensionHttpResponseStream,
-         "zed:extension/github": since_v0_6_0::zed::extension::github,
+         "zed:extension/github": latest::zed::extension::github,
          "zed:extension/nodejs": latest::zed::extension::nodejs,
          "zed:extension/platform": latest::zed::extension::platform,
          "zed:extension/slash-command": latest::zed::extension::slash_command,
@@ -56,11 +52,7 @@ pub type ExtensionHttpResponseStream = Arc<Mutex<::http_client::Response<AsyncBo
 
 pub fn linker(executor: &BackgroundExecutor) -> &'static Linker<WasmState> {
     static LINKER: OnceLock<Linker<WasmState>> = OnceLock::new();
-    LINKER.get_or_init(|| {
-        super::new_linker(executor, |linker| {
-            Extension::add_to_linker::<_, WasmState>(linker, |s| s)
-        })
-    })
+    LINKER.get_or_init(|| super::new_linker(executor, Extension::add_to_linker))
 }
 
 impl From<Command> for latest::Command {
@@ -479,7 +471,7 @@ impl ExtensionImports for WasmState {
             }
             .boxed_local()
         })
-        .await
+        .await?
         .to_wasmtime_result()
     }
 
@@ -516,8 +508,7 @@ impl ExtensionImports for WasmState {
 
             let destination_path = self
                 .host
-                .writeable_path_from_extension(&self.manifest.id, &path)
-                .await?;
+                .writeable_path_from_extension(&self.manifest.id, &path)?;
 
             let mut response = self
                 .host
@@ -574,8 +565,7 @@ impl ExtensionImports for WasmState {
     async fn make_file_executable(&mut self, path: String) -> wasmtime::Result<Result<(), String>> {
         let path = self
             .host
-            .writeable_path_from_extension(&self.manifest.id, Path::new(&path))
-            .await?;
+            .writeable_path_from_extension(&self.manifest.id, Path::new(&path))?;
 
         make_file_executable(&path)
             .await

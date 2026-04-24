@@ -1,4 +1,4 @@
-use crate::migrations::migrate_language_setting;
+use crate::patterns::migrate_language_setting;
 use anyhow::Result;
 use serde_json::Value;
 

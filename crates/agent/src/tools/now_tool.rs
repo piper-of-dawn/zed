@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
+use anyhow::Result;
 use chrono::{Local, Utc};
 use gpui::{App, SharedString, Task};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentTool, ToolCallEventStream, ToolInput};
+use crate::{AgentTool, ToolCallEventStream};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +33,9 @@ impl AgentTool for NowTool {
     type Input = NowToolInput;
     type Output = String;
 
-    const NAME: &'static str = "now";
+    fn name() -> &'static str {
+        "now"
+    }
 
     fn kind() -> acp::ToolKind {
         acp::ToolKind::Other
@@ -48,20 +51,14 @@ impl AgentTool for NowTool {
 
     fn run(
         self: Arc<Self>,
-        input: ToolInput<Self::Input>,
+        input: Self::Input,
         _event_stream: ToolCallEventStream,
-        cx: &mut App,
-    ) -> Task<Result<String, String>> {
-        cx.spawn(async move |_cx| {
-            let input = input
-                .recv()
-                .await
-                .map_err(|e| format!("Failed to receive tool input: {e}"))?;
-            let now = match input.timezone {
-                Timezone::Utc => Utc::now().to_rfc3339(),
-                Timezone::Local => Local::now().to_rfc3339(),
-            };
-            Ok(format!("The current datetime is {now}."))
-        })
+        _cx: &mut App,
+    ) -> Task<Result<String>> {
+        let now = match input.timezone {
+            Timezone::Utc => Utc::now().to_rfc3339(),
+            Timezone::Local => Local::now().to_rfc3339(),
+        };
+        Task::ready(Ok(format!("The current datetime is {now}.")))
     }
 }

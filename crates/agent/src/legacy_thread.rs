@@ -1,5 +1,5 @@
 use crate::ProjectSnapshot;
-use agent_settings::AgentProfileId;
+use agent_settings::{AgentProfileId, CompletionMode};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use gpui::SharedString;
@@ -37,12 +37,14 @@ pub struct SerializedThread {
     #[serde(default)]
     pub model: Option<SerializedLanguageModel>,
     #[serde(default)]
+    pub completion_mode: Option<CompletionMode>,
+    #[serde(default)]
     pub tool_use_limit_reached: bool,
     #[serde(default)]
     pub profile: Option<AgentProfileId>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct SerializedLanguageModel {
     pub provider: String,
     pub model: String,
@@ -184,6 +186,7 @@ impl LegacySerializedThread {
             request_token_usage: Vec::new(),
             detailed_summary_state: DetailedSummaryState::default(),
             model: None,
+            completion_mode: None,
             tool_use_limit_reached: false,
             profile: None,
         }
@@ -272,6 +275,7 @@ mod tests {
                 request_token_usage: vec![],
                 detailed_summary_state: DetailedSummaryState::default(),
                 model: None,
+                completion_mode: None,
                 tool_use_limit_reached: false,
                 profile: None
             }
@@ -337,6 +341,7 @@ mod tests {
             request_token_usage: vec![],
             detailed_summary_state: DetailedSummaryState::default(),
             model: None,
+            completion_mode: None,
             tool_use_limit_reached: false,
             profile: None,
         });
@@ -388,6 +393,7 @@ mod tests {
                 request_token_usage: vec![],
                 detailed_summary_state: DetailedSummaryState::default(),
                 model: None,
+                completion_mode: None,
                 tool_use_limit_reached: false,
                 profile: None
             }

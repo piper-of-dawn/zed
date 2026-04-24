@@ -1,9 +1,6 @@
 use std::cell::RefCell;
 
-use gh_workflow::{
-    Concurrency, Env, Expression, Step, WorkflowCallInput, WorkflowCallSecret,
-    WorkflowDispatchInput,
-};
+use gh_workflow::{Concurrency, Env, Expression, Step, WorkflowDispatchInput};
 
 use crate::tasks::workflows::{runners::Platform, steps::NamedJob};
 
@@ -14,8 +11,8 @@ macro_rules! secret {
 }
 
 macro_rules! var {
-    ($var_name:ident) => {
-        pub const $var_name: &str = concat!("${{ vars.", stringify!($var_name), " }}");
+    ($secret_name:ident) => {
+        pub const $secret_name: &str = concat!("${{ vars.", stringify!($secret_name), " }}");
     };
 }
 
@@ -30,8 +27,6 @@ secret!(AZURE_SIGNING_CLIENT_ID);
 secret!(AZURE_SIGNING_CLIENT_SECRET);
 secret!(AZURE_SIGNING_TENANT_ID);
 secret!(CACHIX_AUTH_TOKEN);
-secret!(CLUSTER_NAME);
-secret!(DIGITALOCEAN_ACCESS_TOKEN);
 secret!(DIGITALOCEAN_SPACES_ACCESS_KEY);
 secret!(DIGITALOCEAN_SPACES_SECRET_KEY);
 secret!(GITHUB_TOKEN);
@@ -47,10 +42,6 @@ secret!(ZED_ZIPPY_APP_PRIVATE_KEY);
 secret!(DISCORD_WEBHOOK_RELEASE_NOTES);
 secret!(WINGET_TOKEN);
 secret!(VERCEL_TOKEN);
-secret!(SLACK_WEBHOOK_WORKFLOW_FAILURES);
-secret!(R2_ACCOUNT_ID);
-secret!(R2_ACCESS_KEY_ID);
-secret!(R2_SECRET_ACCESS_KEY);
 
 // todo(ci) make these secrets too...
 var!(AZURE_SIGNING_ACCOUNT_NAME);
@@ -84,30 +75,14 @@ pub fn bundle_envs(platform: Platform) -> Env {
     }
 }
 
-pub fn one_workflow_per_non_main_branch() -> Concurrency {
-    one_workflow_per_non_main_branch_and_token("")
-}
-
-pub fn one_workflow_per_non_main_branch_and_token<T: AsRef<str>>(token: T) -> Concurrency {
+pub(crate) fn one_workflow_per_non_main_branch() -> Concurrency {
     Concurrency::default()
-        .group(format!(
-            concat!(
-                "${{{{ github.workflow }}}}-${{{{ github.ref_name }}}}-",
-                "${{{{ github.ref_name == 'main' && github.sha || 'anysha' }}}}{}"
-            ),
-            token.as_ref()
-        ))
-        .cancel_in_progress(true)
-}
-
-pub(crate) fn allow_concurrent_runs() -> Concurrency {
-    Concurrency::default()
-        .group("${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_id }}")
+        .group("${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}")
         .cancel_in_progress(true)
 }
 
 // Represents a pattern to check for changed files and corresponding output variable
-pub struct PathCondition {
+pub(crate) struct PathCondition {
     pub name: &'static str,
     pub pattern: &'static str,
     pub invert: bool,
@@ -150,47 +125,19 @@ impl PathCondition {
 }
 
 pub(crate) struct StepOutput {
-    pub name: &'static str,
+    name: &'static str,
     step_id: String,
 }
 
 impl StepOutput {
     pub fn new<T>(step: &Step<T>, name: &'static str) -> Self {
-        let step_id = step
-            .value
-            .id
-            .clone()
-            .expect("Steps that produce outputs must have an ID");
-
-        assert!(
-            step.value
-                .run
-                .as_ref()
-                .is_none_or(|run_command| run_command.contains(name)),
-            "Step output with name '{name}' must occur at least once in run command with ID {step_id}!"
-        );
-
-        Self { name, step_id }
-    }
-
-    pub fn new_unchecked<T>(step: &Step<T>, name: &'static str) -> Self {
-        let step_id = step
-            .value
-            .id
-            .clone()
-            .expect("Steps that produce outputs must have an ID");
-
-        Self { name, step_id }
-    }
-
-    pub fn expr(&self) -> String {
-        format!("steps.{}.outputs.{}", self.step_id, self.name)
-    }
-
-    pub fn as_job_output(self, job: &NamedJob) -> JobOutput {
-        JobOutput {
-            job_name: job.name.clone(),
-            name: self.name,
+        Self {
+            name,
+            step_id: step
+                .value
+                .id
+                .clone()
+                .expect("Steps that produce outputs must have an ID"),
         }
     }
 }
@@ -206,138 +153,42 @@ impl serde::Serialize for StepOutput {
 
 impl std::fmt::Display for StepOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${{{{ {} }}}}", self.expr())
+        write!(f, "${{{{ steps.{}.outputs.{} }}}}", self.step_id, self.name)
     }
 }
 
-pub(crate) struct JobOutput {
-    job_name: String,
-    name: &'static str,
-}
-
-impl JobOutput {
-    pub fn expr(&self) -> String {
-        format!("needs.{}.outputs.{}", self.job_name, self.name)
-    }
-}
-
-impl serde::Serialize for JobOutput {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl std::fmt::Display for JobOutput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${{{{ {} }}}}", self.expr())
-    }
-}
-
-pub struct WorkflowInput {
+pub(crate) struct Input {
     pub input_type: &'static str,
     pub name: &'static str,
     pub default: Option<String>,
-    pub description: Option<String>,
 }
 
-impl WorkflowInput {
+impl Input {
     pub fn string(name: &'static str, default: Option<String>) -> Self {
         Self {
             input_type: "string",
             name,
             default,
-            description: None,
         }
-    }
-
-    pub fn bool(name: &'static str, default: Option<bool>) -> Self {
-        Self {
-            input_type: "boolean",
-            name,
-            default: default.as_ref().map(ToString::to_string),
-            description: None,
-        }
-    }
-
-    pub fn description(mut self, description: impl ToString) -> Self {
-        self.description = Some(description.to_string());
-        self
     }
 
     pub fn input(&self) -> WorkflowDispatchInput {
         WorkflowDispatchInput {
-            description: self
-                .description
-                .clone()
-                .unwrap_or_else(|| self.name.to_owned()),
-            required: self.default.is_none(),
-            input_type: self.input_type.to_owned(),
-            default: self.default.clone(),
-        }
-    }
-
-    pub fn call_input(&self) -> WorkflowCallInput {
-        WorkflowCallInput {
             description: self.name.to_owned(),
             required: self.default.is_none(),
             input_type: self.input_type.to_owned(),
             default: self.default.clone(),
         }
     }
-
-    pub(crate) fn expr(&self) -> String {
-        format!("inputs.{}", self.name)
-    }
 }
 
-impl std::fmt::Display for WorkflowInput {
+impl std::fmt::Display for Input {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${{{{ {} }}}}", self.expr())
+        write!(f, "${{{{ inputs.{} }}}}", self.name)
     }
 }
 
-impl serde::Serialize for WorkflowInput {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-pub(crate) struct WorkflowSecret {
-    pub name: &'static str,
-    description: String,
-    required: bool,
-}
-
-impl WorkflowSecret {
-    pub fn new(name: &'static str, description: impl ToString) -> Self {
-        Self {
-            name,
-            description: description.to_string(),
-            required: true,
-        }
-    }
-
-    pub fn secret_configuration(&self) -> WorkflowCallSecret {
-        WorkflowCallSecret {
-            description: self.description.clone(),
-            required: self.required,
-        }
-    }
-}
-
-impl std::fmt::Display for WorkflowSecret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${{{{ secrets.{} }}}}", self.name)
-    }
-}
-
-impl serde::Serialize for WorkflowSecret {
+impl serde::Serialize for Input {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -359,8 +210,6 @@ pub mod assets {
     pub const REMOTE_SERVER_MAC_X86_64: &str = "zed-remote-server-macos-x86_64.gz";
     pub const REMOTE_SERVER_LINUX_AARCH64: &str = "zed-remote-server-linux-aarch64.gz";
     pub const REMOTE_SERVER_LINUX_X86_64: &str = "zed-remote-server-linux-x86_64.gz";
-    pub const REMOTE_SERVER_WINDOWS_AARCH64: &str = "zed-remote-server-windows-aarch64.zip";
-    pub const REMOTE_SERVER_WINDOWS_X86_64: &str = "zed-remote-server-windows-x86_64.zip";
 
     pub fn all() -> Vec<&'static str> {
         vec![
@@ -374,8 +223,6 @@ pub mod assets {
             REMOTE_SERVER_MAC_X86_64,
             REMOTE_SERVER_LINUX_AARCH64,
             REMOTE_SERVER_LINUX_X86_64,
-            REMOTE_SERVER_WINDOWS_AARCH64,
-            REMOTE_SERVER_WINDOWS_X86_64,
         ]
     }
 }

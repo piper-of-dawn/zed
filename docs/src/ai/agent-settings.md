@@ -1,17 +1,12 @@
----
-title: AI Agent Settings - Zed
-description: "Customize Zed's AI agent: default models, temperature, tool approval, auto-run commands, notifications, and panel options."
----
-
 # Agent Settings
 
-Settings for Zed's Agent Panel, including model selection, UI preferences, and tool permissions.
+Learn about all the settings you can customize in Zed's Agent Panel.
 
 ## Model Settings {#model-settings}
 
 ### Default Model {#default-model}
 
-If you're using [Zed's hosted LLM service](./subscription.md), it sets `claude-sonnet-4-5` as the default model for agentic work (agent panel, inline assistant) and `gpt-5-nano` as the default "fast" model (thread summarization, git commit messages). If you're not subscribed or want to change these defaults, you can manually edit the `default_model` object in your settings:
+If you're using [Zed's hosted LLM service](./subscription.md), it sets `claude-sonnet-4` as the default model for agentic work (agent panel, inline assistant) and `gpt-5-nano` as the default "fast" model (thread summarization, git commit messages). If you're not subscribed or want to change these defaults, you can manually edit the `default_model` object in your settings:
 
 ```json [settings]
 {
@@ -37,7 +32,7 @@ You can assign distinct and specific models for the following AI-powered feature
   "agent": {
     "default_model": {
       "provider": "zed.dev",
-      "model": "claude-sonnet-4-5"
+      "model": "claude-sonnet-4"
     },
     "inline_assistant_model": {
       "provider": "anthropic",
@@ -61,19 +56,19 @@ You can assign distinct and specific models for the following AI-powered feature
 
 With the Inline Assistant in particular, you can send the same prompt to multiple models at once.
 
-Here's how you can customize your settings file ([how to edit](../configuring-zed.md#settings-files)) to add this functionality:
+Here's how you can customize your `settings.json` to add this functionality:
 
 ```json [settings]
 {
   "agent": {
     "default_model": {
       "provider": "zed.dev",
-      "model": "claude-sonnet-4-5"
+      "model": "claude-sonnet-4"
     },
     "inline_alternatives": [
       {
         "provider": "zed.dev",
-        "model": "gpt-5-mini"
+        "model": "gpt-4-mini"
       }
     ]
   }
@@ -85,23 +80,23 @@ When multiple models are configured, you'll see in the Inline Assistant UI butto
 The models you specify here are always used in _addition_ to your [default model](#default-model).
 
 For example, the following configuration will generate three outputs for every assist.
-One with Claude Sonnet 4.5 (the default model), another with GPT-5-mini, and another one with Gemini 3 Flash.
+One with Claude Sonnet 4 (the default model), another with GPT-5-mini, and another one with Gemini 2.5 Flash.
 
 ```json [settings]
 {
   "agent": {
     "default_model": {
       "provider": "zed.dev",
-      "model": "claude-sonnet-4-5"
+      "model": "claude-sonnet-4"
     },
     "inline_alternatives": [
       {
         "provider": "zed.dev",
-        "model": "gpt-5-mini"
+        "model": "gpt-4-mini"
       },
       {
         "provider": "zed.dev",
-        "model": "gemini-3-flash"
+        "model": "gemini-2.5-flash"
       }
     ]
   }
@@ -113,171 +108,70 @@ One with Claude Sonnet 4.5 (the default model), another with GPT-5-mini, and ano
 Specify a custom temperature for a provider and/or model:
 
 ```json [settings]
-{
-  "agent": {
-    "model_parameters": [
-      // To set parameters for all requests to OpenAI models:
-      {
-        "provider": "openai",
-        "temperature": 0.5
-      },
-      // To set parameters for all requests in general:
-      {
-        "temperature": 0
-      },
-      // To set parameters for a specific provider and model:
-      {
-        "provider": "zed.dev",
-        "model": "claude-sonnet-4-5",
-        "temperature": 1.0
-      }
-    ]
+"model_parameters": [
+  // To set parameters for all requests to OpenAI models:
+  {
+    "provider": "openai",
+    "temperature": 0.5
+  },
+  // To set parameters for all requests in general:
+  {
+    "temperature": 0
+  },
+  // To set parameters for a specific provider and model:
+  {
+    "provider": "zed.dev",
+    "model": "claude-sonnet-4",
+    "temperature": 1.0
   }
-}
+],
 ```
 
 ## Agent Panel Settings {#agent-panel-settings}
 
 Note that some of these settings are also surfaced in the Agent Panel's settings UI, which you can access either via the `agent: open settings` action or by the dropdown menu on the top-right corner of the panel.
 
+### Default View
+
+Use the `default_view` setting to change the default view of the Agent Panel.
+You can choose between `thread` (the default) and `text_thread`:
+
+```json [settings]
+{
+  "agent": {
+    "default_view": "text_thread"
+  }
+}
+```
+
 ### Font Size
 
-Use the `agent_ui_font_size` setting to change the font size of rendered agent responses in the panel.
-
-```json [settings]
-{
-  "agent_ui_font_size": 18
-}
-```
-
-> Editors in the Agent Panel—such as the main message textarea—use monospace fonts and are controlled by `agent_buffer_font_size` (which defaults to `buffer_font_size` when unset).
-
-### Default Tool Permissions
-
-> **Note:** In Zed v0.224.0 and above, tool approval uses the `agent.tool_permissions` settings described below.
-
-The `agent.tool_permissions.default` setting controls the baseline tool approval behavior for Zed's native agent:
-
-- `"confirm"` (default) — Prompts for approval before running any tool action
-- `"allow"` — Auto-approves tool actions without prompting
-- `"deny"` — Blocks all tool actions
+Use the `agent_font_size` setting to change the font size of rendered agent responses in the panel.
 
 ```json [settings]
 {
   "agent": {
-    "tool_permissions": {
-      "default": "confirm"
-    }
+    "agent_font_size": 18
   }
 }
 ```
 
-Even with `"default": "allow"`, per-tool `always_deny` and `always_confirm` patterns are still respected, so you can auto-approve most actions while keeping guardrails on dangerous or sensitive ones.
+> Editors in the Agent Panel—whether that is the main message textarea or previous messages—use monospace fonts and therefore, are controlled by the `buffer_font_size` setting, which is defined globally in your `settings.json`.
 
-### Per-tool Permission Rules {#per-tool-permission-rules}
+### Auto-run Commands
 
-For granular control over individual tool actions, use the `tools` key inside `tool_permissions` to configure regex-based rules that auto-approve, auto-deny, or always require confirmation for specific inputs.
-
-Each tool entry supports the following keys:
-
-- `default` — Fallback when no patterns match: `"confirm"`, `"allow"`, or `"deny"`
-- `always_allow` — Array of patterns that auto-approve matching actions
-- `always_deny` — Array of patterns that block matching actions immediately
-- `always_confirm` — Array of patterns that always prompt for confirmation
+Control whether to allow the agent to run commands without asking you for permission.
+The default value is `false`.
 
 ```json [settings]
 {
   "agent": {
-    "tool_permissions": {
-      "default": "allow",
-      "tools": {
-        "terminal": {
-          "default": "confirm",
-          "always_allow": [
-            { "pattern": "^cargo\\s+(build|test|check)" },
-            { "pattern": "^git\\s+(status|log|diff)" }
-          ],
-          "always_deny": [{ "pattern": "rm\\s+-rf\\s+(/|~)" }],
-          "always_confirm": [{ "pattern": "sudo\\s" }]
-        },
-        "edit_file": {
-          "always_deny": [
-            { "pattern": "\\.env" },
-            { "pattern": "\\.(pem|key)$" }
-          ]
-        }
-      }
-    }
+    "always_allow_tool_actions": true
   }
 }
 ```
 
-#### Pattern Precedence
-
-When evaluating a tool action, rules are checked in the following order (highest priority first):
-
-1. **Built-in security rules** — Hardcoded protections (e.g., `rm -rf /`) that cannot be overridden
-2. **`always_deny`** — Blocks matching actions immediately
-3. **`always_confirm`** — Requires confirmation for matching actions
-4. **`always_allow`** — Auto-approves matching actions. For the terminal tool with chained commands (e.g., `echo hello && rm file`), **all** sub-commands must match an `always_allow` pattern
-5. **Tool-specific `default`** — Per-tool fallback when no patterns match (e.g., `tools.terminal.default`)
-6. **Global `default`** — Falls back to `tool_permissions.default`
-
-#### Case Sensitivity
-
-Patterns are **case-insensitive** by default. To make a pattern case-sensitive, set `case_sensitive` to `true`:
-
-```json [settings]
-{
-  "agent": {
-    "tool_permissions": {
-      "tools": {
-        "edit_file": {
-          "always_deny": [
-            {
-              "pattern": "^Makefile$",
-              "case_sensitive": true
-            }
-          ]
-        }
-      }
-    }
-  }
-}
-```
-
-#### `copy_path` and `move_path` Patterns
-
-For the `copy_path` and `move_path` tools, patterns are matched independently against both the source and destination paths. A `deny` or `confirm` match on **either** path takes effect. For `always_allow`, **both** paths must match for auto-approval.
-
-#### MCP Tool Permissions
-
-MCP tools use the key format `mcp:<server_name>:<tool_name>` in the `tools` configuration. For example:
-
-```json [settings]
-{
-  "agent": {
-    "tool_permissions": {
-      "tools": {
-        "mcp:github:create_issue": {
-          "default": "confirm"
-        },
-        "mcp:github:create_pull_request": {
-          "default": "deny"
-        }
-      }
-    }
-  }
-}
-```
-
-The `default` key on each MCP tool entry is the primary mechanism for controlling MCP tool permissions. Pattern-based rules (`always_allow`, `always_deny`, `always_confirm`) match against an empty string for MCP tools, so most patterns won't match — use the tool-level `default` instead.
-
-See the [Tool Permissions](./tool-permissions.md) documentation for more examples and complete details.
-
-> **Note:** Before Zed v0.224.0, tool approval was controlled by the `agent.always_allow_tool_actions` boolean (default `false`). Set it to `true` to auto-approve tool actions, or leave it `false` to require confirmation for edits and tool calls.
-
-### Edit Display Mode
+### Single-file Review
 
 Control whether to display review actions (accept & reject) in single buffers after the agent is done performing edits.
 The default value is `false`.
@@ -285,23 +179,22 @@ The default value is `false`.
 ```json [settings]
 {
   "agent": {
-    "single_file_review": false
+    "single_file_review": true
   }
 }
 ```
 
+When set to false, these controls are only available in the multibuffer review tab.
+
 ### Sound Notification
 
-Control whether to hear a notification sound when the agent is done generating changes or needs your input. The default value is `never`.
-
-- `"never"` (default) — Never play the sound.
-- `"when_hidden"` — Only play the sound when the agent panel is not visible.
-- `"always"` — Always play the sound on completion.
+Control whether to hear a notification sound when the agent is done generating changes or needs your input.
+The default value is `false`.
 
 ```json [settings]
 {
   "agent": {
-    "play_sound_when_agent_done": "never"
+    "play_sound_when_agent_done": true
   }
 }
 ```
@@ -321,7 +214,8 @@ It is set to `4` by default, and the max number of lines is always double of the
 
 ### Modifier to Send
 
-Require a modifier (`cmd` on macOS, `ctrl` on Linux) to send messages. Prevents accidental sends while editing.
+Make a modifier (`cmd` on macOS, `ctrl` on Linux) required to send messages.
+This is encouraged for more thoughtful prompt crafting.
 The default value is `false`.
 
 ```json [settings]

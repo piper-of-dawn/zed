@@ -4,8 +4,9 @@ use std::{
 };
 
 use fs::RealFs;
-use settings::WorktreeId;
-use worktree::Worktree;
+use gpui::Application;
+use settings::Settings;
+use worktree::{Worktree, WorktreeSettings};
 
 fn main() {
     let Some(worktree_root_path) = std::env::args().nth(1) else {
@@ -14,7 +15,7 @@ fn main() {
         );
         return;
     };
-    let app = gpui_platform::headless();
+    let app = Application::headless();
 
     app.run(|cx| {
         settings::init(cx);
@@ -26,19 +27,19 @@ fn main() {
                 true,
                 fs,
                 Arc::new(AtomicUsize::new(0)),
-                true,
-                WorktreeId::from_proto(0),
                 cx,
             )
             .await
             .expect("Worktree initialization to succeed");
-            let did_finish_scan =
-                worktree.update(cx, |this, _| this.as_local().unwrap().scan_complete());
+            let did_finish_scan = worktree
+                .update(cx, |this, _| this.as_local().unwrap().scan_complete())
+                .unwrap();
             let start = std::time::Instant::now();
             did_finish_scan.await;
             let elapsed = start.elapsed();
-            let (files, directories) =
-                worktree.read_with(cx, |this, _| (this.file_count(), this.dir_count()));
+            let (files, directories) = worktree
+                .read_with(cx, |this, _| (this.file_count(), this.dir_count()))
+                .unwrap();
             println!(
                 "{:?} for {directories} directories and {files} files",
                 elapsed

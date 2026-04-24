@@ -22,7 +22,7 @@ pub fn init(cx: &mut App) {
     extension_snippet::init(cx);
 }
 
-/// Language name, or `None` if the snippet file is global.
+// Is `None` if the snippet file is global.
 type SnippetKind = Option<String>;
 fn file_stem_to_key(stem: &str) -> SnippetKind {
     if stem == "snippets" {
@@ -32,36 +32,29 @@ fn file_stem_to_key(stem: &str) -> SnippetKind {
     }
 }
 
-pub fn file_to_snippets(
-    file_contents: VsSnippetsFile,
-    source: &Path,
-) -> impl Iterator<Item = Result<Arc<Snippet>>> {
-    file_contents
-        .snippets
-        .into_iter()
-        .map(move |(name, snippet)| {
-            let snippet_name = name.clone();
-            let prefixes = snippet
-                .prefix
-                .map_or_else(move || vec![snippet_name], |prefixes| prefixes.into());
-            let description = snippet
-                .description
-                .map(|description| description.to_string());
-            let body = snippet.body.to_string();
-            match snippet::Snippet::parse(&body) {
-                Ok(_) => Ok(Arc::new(Snippet {
-                    body,
-                    prefix: prefixes,
-                    description,
-                    name,
-                })),
-                Err(e) => Err(anyhow::anyhow!(
-                    "Invalid snippet '{name}' in {source:?}: {e:#}"
-                )),
-            }
-        })
+fn file_to_snippets(file_contents: VsSnippetsFile) -> Vec<Arc<Snippet>> {
+    let mut snippets = vec![];
+    for (name, snippet) in file_contents.snippets {
+        let snippet_name = name.clone();
+        let prefixes = snippet
+            .prefix
+            .map_or_else(move || vec![snippet_name], |prefixes| prefixes.into());
+        let description = snippet
+            .description
+            .map(|description| description.to_string());
+        let body = snippet.body.to_string();
+        if snippet::Snippet::parse(&body).log_err().is_none() {
+            continue;
+        };
+        snippets.push(Arc::new(Snippet {
+            body,
+            prefix: prefixes,
+            description,
+            name,
+        }));
+    }
+    snippets
 }
-
 // Snippet with all of the metadata
 #[derive(Debug)]
 pub struct Snippet {
@@ -112,9 +105,8 @@ async fn process_updates(
                 else {
                     return;
                 };
-                let snippets = file_to_snippets(as_json, entry_path.as_path());
-                *snippets_of_kind.entry(entry_path).or_default() =
-                    snippets.filter_map(Result::log_err).collect();
+                let snippets = file_to_snippets(as_json);
+                *snippets_of_kind.entry(entry_path).or_default() = snippets;
             } else {
                 snippets_of_kind.remove(&entry_path);
             }

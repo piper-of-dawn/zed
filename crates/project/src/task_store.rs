@@ -19,7 +19,7 @@ use util::ResultExt;
 
 use crate::{
     BasicContextProvider, Inventory, ProjectEnvironment, buffer_store::BufferStore,
-    git_store::GitStore, worktree_store::WorktreeStore,
+    worktree_store::WorktreeStore,
 };
 
 // platform-dependent warning
@@ -33,7 +33,6 @@ pub struct StoreState {
     task_inventory: Entity<Inventory>,
     buffer_store: WeakEntity<BufferStore>,
     worktree_store: Entity<WorktreeStore>,
-    git_store: Entity<GitStore>,
     toolchain_store: Arc<dyn LanguageToolchainStore>,
 }
 
@@ -85,7 +84,7 @@ impl TaskStore {
                     anyhow::bail!("empty task store cannot handle task context requests")
                 }
             })
-        })?;
+        })??;
         let buffer_store = buffer_store
             .upgrade()
             .context("no buffer store when handling task context request")?;
@@ -116,7 +115,7 @@ impl TaskStore {
                             .with_context(|| format!("no local buffer with id {buffer_id}")),
                     )
                 }
-            })
+            })?
             .await?;
 
         let location = Location {
@@ -144,7 +143,7 @@ impl TaskStore {
                 variables
             };
             store.task_context_for_location(captured_variables, location, cx)
-        });
+        })?;
         let task_context = context_task.await.unwrap_or_default();
         Ok(proto::TaskContext {
             project_env: task_context.project_env.into_iter().collect(),
@@ -164,7 +163,6 @@ impl TaskStore {
         worktree_store: Entity<WorktreeStore>,
         toolchain_store: Arc<dyn LanguageToolchainStore>,
         environment: Entity<ProjectEnvironment>,
-        git_store: Entity<GitStore>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self::Functional(StoreState {
@@ -174,7 +172,6 @@ impl TaskStore {
             },
             task_inventory: Inventory::new(cx),
             buffer_store,
-            git_store,
             toolchain_store,
             worktree_store,
         })
@@ -186,7 +183,6 @@ impl TaskStore {
         toolchain_store: Arc<dyn LanguageToolchainStore>,
         upstream_client: AnyProtoClient,
         project_id: u64,
-        git_store: Entity<GitStore>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self::Functional(StoreState {
@@ -196,7 +192,6 @@ impl TaskStore {
             },
             task_inventory: Inventory::new(cx),
             buffer_store,
-            git_store,
             toolchain_store,
             worktree_store,
         })
@@ -212,7 +207,6 @@ impl TaskStore {
             TaskStore::Functional(state) => match &state.mode {
                 StoreMode::Local { environment, .. } => local_task_context_for_location(
                     state.worktree_store.clone(),
-                    state.git_store.clone(),
                     state.toolchain_store.clone(),
                     environment.clone(),
                     captured_variables,
@@ -226,7 +220,6 @@ impl TaskStore {
                     *project_id,
                     upstream_client.clone(),
                     state.worktree_store.clone(),
-                    state.git_store.clone(),
                     captured_variables,
                     location,
                     state.toolchain_store.clone(),
@@ -309,7 +302,6 @@ impl TaskStore {
 
 fn local_task_context_for_location(
     worktree_store: Entity<WorktreeStore>,
-    git_store: Entity<GitStore>,
     toolchain_store: Arc<dyn LanguageToolchainStore>,
     environment: Entity<ProjectEnvironment>,
     captured_variables: TaskVariables,
@@ -327,6 +319,7 @@ fn local_task_context_for_location(
             .update(cx, |environment, cx| {
                 environment.buffer_environment(&location.buffer, &worktree_store, cx)
             })
+            .ok()?
             .await;
 
         let mut task_variables = cx
@@ -337,11 +330,12 @@ fn local_task_context_for_location(
                     worktree_store.clone(),
                     location,
                     project_env.clone(),
-                    BasicContextProvider::new(worktree_store, git_store),
+                    BasicContextProvider::new(worktree_store),
                     toolchain_store,
                     cx,
                 )
             })
+            .ok()?
             .await
             .log_err()?;
         // Remove all custom entries starting with _, as they're not intended for use by the end user.
@@ -359,7 +353,6 @@ fn remote_task_context_for_location(
     project_id: u64,
     upstream_client: AnyProtoClient,
     worktree_store: Entity<WorktreeStore>,
-    git_store: Entity<GitStore>,
     captured_variables: TaskVariables,
     location: Location,
     toolchain_store: Arc<dyn LanguageToolchainStore>,
@@ -371,7 +364,7 @@ fn remote_task_context_for_location(
             .update(|cx| {
                 let worktree_root = worktree_root(&worktree_store, &location, cx);
 
-                BasicContextProvider::new(worktree_store, git_store).build_context(
+                BasicContextProvider::new(worktree_store).build_context(
                     &TaskVariables::default(),
                     ContextLocation {
                         fs: None,
@@ -383,12 +376,15 @@ fn remote_task_context_for_location(
                     cx,
                 )
             })
+            .ok()?
             .await
             .log_err()
             .unwrap_or_default();
         remote_context.extend(captured_variables);
 
-        let buffer_id = cx.update(|cx| location.buffer.read(cx).remote_id().to_proto());
+        let buffer_id = cx
+            .update(|cx| location.buffer.read(cx).remote_id().to_proto())
+            .ok()?;
         let context_task = upstream_client.request(proto::TaskContextForLocation {
             project_id,
             location: Some(proto::Location {
@@ -476,7 +472,7 @@ fn combine_task_variables(
                     toolchain_store.clone(),
                     cx,
                 )
-            })
+            })?
             .await
             .context("building basic default context")?;
         captured_variables.extend(baseline);
@@ -495,7 +491,7 @@ fn combine_task_variables(
                         toolchain_store,
                         cx,
                     )
-                })
+                })?
                 .await
                 .context("building provider context")?,
             );

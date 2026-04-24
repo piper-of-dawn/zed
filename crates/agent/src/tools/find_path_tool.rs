@@ -1,7 +1,6 @@
-use crate::{AgentTool, ToolCallEventStream, ToolInput};
+use crate::{AgentTool, ToolCallEventStream};
 use agent_client_protocol as acp;
 use anyhow::{Result, anyhow};
-use futures::FutureExt as _;
 use gpui::{App, AppContext, Entity, SharedString, Task};
 use language_model::LanguageModelToolResultContent;
 use project::Project;
@@ -39,48 +38,33 @@ pub struct FindPathToolInput {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum FindPathToolOutput {
-    Success {
-        offset: usize,
-        current_matches_page: Vec<PathBuf>,
-        all_matches_len: usize,
-    },
-    Error {
-        error: String,
-    },
+pub struct FindPathToolOutput {
+    offset: usize,
+    current_matches_page: Vec<PathBuf>,
+    all_matches_len: usize,
 }
 
 impl From<FindPathToolOutput> for LanguageModelToolResultContent {
     fn from(output: FindPathToolOutput) -> Self {
-        match output {
-            FindPathToolOutput::Success {
-                offset,
-                current_matches_page,
-                all_matches_len,
-            } => {
-                if current_matches_page.is_empty() {
-                    "No matches found".into()
-                } else {
-                    let mut llm_output = format!("Found {} total matches.", all_matches_len);
-                    if all_matches_len > RESULTS_PER_PAGE {
-                        write!(
-                            &mut llm_output,
-                            "\nShowing results {}-{} (provide 'offset' parameter for more results):",
-                            offset + 1,
-                            offset + current_matches_page.len()
-                        )
-                        .ok();
-                    }
-
-                    for mat in current_matches_page {
-                        write!(&mut llm_output, "\n{}", mat.display()).ok();
-                    }
-
-                    llm_output.into()
-                }
+        if output.current_matches_page.is_empty() {
+            "No matches found".into()
+        } else {
+            let mut llm_output = format!("Found {} total matches.", output.all_matches_len);
+            if output.all_matches_len > RESULTS_PER_PAGE {
+                write!(
+                    &mut llm_output,
+                    "\nShowing results {}-{} (provide 'offset' parameter for more results):",
+                    output.offset + 1,
+                    output.offset + output.current_matches_page.len()
+                )
+                .unwrap();
             }
-            FindPathToolOutput::Error { error } => error.into(),
+
+            for mat in output.current_matches_page {
+                write!(&mut llm_output, "\n{}", mat.display()).unwrap();
+            }
+
+            llm_output.into()
         }
     }
 }
@@ -101,7 +85,9 @@ impl AgentTool for FindPathTool {
     type Input = FindPathToolInput;
     type Output = FindPathToolOutput;
 
-    const NAME: &'static str = "find_path";
+    fn name() -> &'static str {
+        "find_path"
+    }
 
     fn kind() -> acp::ToolKind {
         acp::ToolKind::Search
@@ -121,52 +107,46 @@ impl AgentTool for FindPathTool {
 
     fn run(
         self: Arc<Self>,
-        input: ToolInput<Self::Input>,
+        input: Self::Input,
         event_stream: ToolCallEventStream,
         cx: &mut App,
-    ) -> Task<Result<Self::Output, Self::Output>> {
-        let project = self.project.clone();
-        cx.spawn(async move |cx| {
-            let input = input.recv().await.map_err(|e| FindPathToolOutput::Error {
-                error: format!("Failed to receive tool input: {e}"),
-            })?;
+    ) -> Task<Result<FindPathToolOutput>> {
+        let search_paths_task = search_paths(&input.glob, self.project.clone(), cx);
 
-            let search_paths_task = cx.update(|cx| search_paths(&input.glob, project, cx));
-
-            let matches = futures::select! {
-                result = search_paths_task.fuse() => result.map_err(|e| FindPathToolOutput::Error { error: e.to_string() })?,
-                _ = event_stream.cancelled_by_user().fuse() => {
-                    return Err(FindPathToolOutput::Error { error: "Path search cancelled by user".to_string() });
-                }
-            };
+        cx.background_spawn(async move {
+            let matches = search_paths_task.await?;
             let paginated_matches: &[PathBuf] = &matches[cmp::min(input.offset, matches.len())
                 ..cmp::min(input.offset + RESULTS_PER_PAGE, matches.len())];
 
-            event_stream.update_fields(
-                acp::ToolCallUpdateFields::new()
-                    .title(if paginated_matches.is_empty() {
-                        "No matches".into()
-                    } else if paginated_matches.len() == 1 {
-                        "1 match".into()
-                    } else {
-                        format!("{} matches", paginated_matches.len())
-                    })
-                    .content(
-                        paginated_matches
-                            .iter()
-                            .map(|path| {
-                                acp::ToolCallContent::Content(acp::Content::new(
-                                    acp::ContentBlock::ResourceLink(acp::ResourceLink::new(
-                                        path.to_string_lossy(),
-                                        format!("file://{}", path.display()),
-                                    )),
-                                ))
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-            );
+            event_stream.update_fields(acp::ToolCallUpdateFields {
+                title: Some(if paginated_matches.is_empty() {
+                    "No matches".into()
+                } else if paginated_matches.len() == 1 {
+                    "1 match".into()
+                } else {
+                    format!("{} matches", paginated_matches.len())
+                }),
+                content: Some(
+                    paginated_matches
+                        .iter()
+                        .map(|path| acp::ToolCallContent::Content {
+                            content: acp::ContentBlock::ResourceLink(acp::ResourceLink {
+                                uri: format!("file://{}", path.display()),
+                                name: path.to_string_lossy().into(),
+                                annotations: None,
+                                description: None,
+                                mime_type: None,
+                                size: None,
+                                title: None,
+                                meta: None,
+                            }),
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            });
 
-            Ok(FindPathToolOutput::Success {
+            Ok(FindPathToolOutput {
                 offset: input.offset,
                 current_matches_page: paginated_matches.to_vec(),
                 all_matches_len: matches.len(),
@@ -197,7 +177,7 @@ fn search_paths(glob: &str, project: Entity<Project>, cx: &mut App) -> Task<Resu
         let mut results = Vec::new();
         for snapshot in snapshots {
             for entry in snapshot.entries(false, 0) {
-                if path_matcher.is_match(&snapshot.root_name().join(&entry.path)) {
+                if path_matcher.is_match(snapshot.root_name().join(&entry.path).as_std_path()) {
                     results.push(snapshot.absolutize(&entry.path));
                 }
             }

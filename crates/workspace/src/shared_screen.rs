@@ -2,9 +2,10 @@ use crate::{
     ItemNavHistory, WorkspaceId,
     item::{Item, ItemEvent},
 };
+use call::{RemoteVideoTrack, RemoteVideoTrackView, Room};
 use client::{User, proto::PeerId};
 use gpui::{
-    AnyView, AppContext as _, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    AppContext as _, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     ParentElement, Render, SharedString, Styled, Task, div,
 };
 use std::sync::Arc;
@@ -18,26 +19,40 @@ pub struct SharedScreen {
     pub peer_id: PeerId,
     user: Arc<User>,
     nav_history: Option<ItemNavHistory>,
-    view: AnyView,
-    clone_view: fn(&AnyView, &mut Window, &mut App) -> AnyView,
+    view: Entity<RemoteVideoTrackView>,
     focus: FocusHandle,
 }
 
 impl SharedScreen {
     pub fn new(
+        track: RemoteVideoTrack,
         peer_id: PeerId,
         user: Arc<User>,
-        view: AnyView,
-        clone_view: fn(&AnyView, &mut Window, &mut App) -> AnyView,
+        room: Entity<Room>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let my_sid = track.sid();
+        cx.subscribe(&room, move |_, _, ev, cx| {
+            if let call::room::Event::RemoteVideoTrackUnsubscribed { sid } = ev
+                && sid == &my_sid
+            {
+                cx.emit(Event::Close)
+            }
+        })
+        .detach();
+
+        let view = cx.new(|cx| RemoteVideoTrackView::new(track.clone(), window, cx));
+        cx.subscribe(&view, |_, _, ev, cx| match ev {
+            call::RemoteVideoTrackViewEvent::Close => cx.emit(Event::Close),
+        })
+        .detach();
         Self {
             view,
             peer_id,
             user,
             nav_history: Default::default(),
             focus: cx.focus_handle(),
-            clone_view,
         }
     }
 }
@@ -69,7 +84,7 @@ impl Item for SharedScreen {
 
     fn deactivated(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(nav_history) = self.nav_history.as_mut() {
-            nav_history.push::<()>(None, None, cx);
+            nav_history.push::<()>(None, cx);
         }
     }
 
@@ -104,19 +119,16 @@ impl Item for SharedScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Option<Entity<Self>>> {
-        let clone_view = self.clone_view;
-        let cloned_view = clone_view(&self.view, window, cx);
         Task::ready(Some(cx.new(|cx| Self {
-            view: cloned_view,
+            view: self.view.update(cx, |view, cx| view.clone(window, cx)),
             peer_id: self.peer_id,
             user: self.user.clone(),
             nav_history: Default::default(),
             focus: cx.focus_handle(),
-            clone_view,
         })))
     }
 
-    fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(ItemEvent)) {
+    fn to_item_events(event: &Self::Event, mut f: impl FnMut(ItemEvent)) {
         match event {
             Event::Close => f(ItemEvent::CloseItem),
         }

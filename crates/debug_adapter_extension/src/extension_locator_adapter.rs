@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use dap::{DapLocator, DebugRequest, adapters::DebugAdapterName};
 use extension::Extension;
-use gpui::{BackgroundExecutor, SharedString};
+use gpui::SharedString;
 use std::sync::Arc;
 use task::{DebugScenario, SpawnInTerminal, TaskTemplate};
 
@@ -44,11 +44,7 @@ impl DapLocator for ExtensionLocatorAdapter {
             .flatten()
     }
 
-    async fn run(
-        &self,
-        build_config: SpawnInTerminal,
-        _executor: BackgroundExecutor,
-    ) -> Result<DebugRequest> {
+    async fn run(&self, build_config: SpawnInTerminal) -> Result<DebugRequest> {
         self.extension
             .run_dap_locator(self.locator_name.as_ref().to_owned(), build_config)
             .await

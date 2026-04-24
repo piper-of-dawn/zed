@@ -8,7 +8,7 @@ use ui::{
     Render, Styled, StyledExt, Toggleable, Window, div, h_flex, rems, v_flex,
 };
 use util::ResultExt as _;
-use workspace::{ModalView, MultiWorkspace};
+use workspace::{ModalView, Workspace};
 
 use crate::open_remote_project;
 
@@ -235,6 +235,9 @@ impl WslOpenModal {
         cx: &mut Context<Self>,
     ) {
         let app_state = workspace::AppState::global(cx);
+        let Some(app_state) = app_state.upgrade() else {
+            return;
+        };
 
         let connection_options = RemoteConnectionOptions::Wsl(WslConnectionOptions {
             distro_name: distro.to_string(),
@@ -245,16 +248,14 @@ impl WslOpenModal {
             true => secondary,
             false => !secondary,
         };
-        let open_mode = if replace_current_window {
-            workspace::OpenMode::Activate
-        } else {
-            workspace::OpenMode::NewWindow
+        let replace_window = match replace_current_window {
+            true => window.window_handle().downcast::<Workspace>(),
+            false => None,
         };
 
         let paths = self.paths.clone();
         let open_options = workspace::OpenOptions {
-            requesting_window: window.window_handle().downcast::<MultiWorkspace>(),
-            open_mode,
+            replace_window,
             ..Default::default()
         };
 

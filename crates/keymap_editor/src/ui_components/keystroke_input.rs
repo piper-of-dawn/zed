@@ -64,7 +64,6 @@ pub struct KeystrokeInput {
     clear_close_keystrokes_timer: Option<Task<()>>,
     #[cfg(test)]
     recording: bool,
-    pub actions_slot: Option<AnyElement>,
 }
 
 impl KeystrokeInput {
@@ -95,7 +94,6 @@ impl KeystrokeInput {
             clear_close_keystrokes_timer: None,
             #[cfg(test)]
             recording: false,
-            actions_slot: None,
         }
     }
 
@@ -388,7 +386,7 @@ impl KeystrokeInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.inner_focus_handle, cx);
+        window.focus(&self.inner_focus_handle);
         self.clear_keystrokes(&ClearKeystrokes, window, cx);
         self.previous_modifiers = window.modifiers();
         #[cfg(test)]
@@ -407,7 +405,7 @@ impl KeystrokeInput {
         if !self.is_recording(window) {
             return;
         }
-        window.focus(&self.outer_focus_handle, cx);
+        window.focus(&self.outer_focus_handle);
         if let Some(close_keystrokes_start) = self.close_keystrokes_start.take()
             && close_keystrokes_start < self.keystrokes.len()
         {
@@ -446,11 +444,6 @@ impl KeystrokeInput {
         // on focus of the inner focus handle, thereby ensuring our recording state does
         // not get de-synced
         self.inner_focus_handle.is_focused(window)
-    }
-
-    pub fn actions_slot(mut self, action: impl IntoElement) -> Self {
-        self.actions_slot = Some(action.into_any_element());
-        self
     }
 }
 
@@ -593,7 +586,7 @@ impl Render for KeystrokeInput {
                     .min_w_0()
                     .justify_center()
                     .flex_wrap()
-                    .gap_1()
+                    .gap(ui::DynamicSpacing::Base04.rems(cx))
                     .children(self.render_keystrokes(is_recording)),
             )
             .child(
@@ -643,25 +636,18 @@ impl Render for KeystrokeInput {
                             )
                         }
                     })
-                    .when_some(self.actions_slot.take(), |this, action| this.child(action))
-                    .when(is_recording, |this| {
-                        this.child(
-                            IconButton::new("clear-btn", IconName::Backspace)
-                                .shape(IconButtonShape::Square)
-                                .tooltip(move |_, cx| {
-                                    Tooltip::with_meta(
-                                        "Clear Keystrokes",
-                                        Some(&ClearKeystrokes),
-                                        "Hit it three times to execute",
-                                        cx,
-                                    )
-                                })
-                                .when(!is_focused, |this| this.icon_color(Color::Muted))
-                                .on_click(cx.listener(|this, _event, window, cx| {
-                                    this.clear_keystrokes(&ClearKeystrokes, window, cx);
-                                })),
-                        )
-                    }),
+                    .child(
+                        IconButton::new("clear-btn", IconName::Backspace)
+                            .shape(IconButtonShape::Square)
+                            .tooltip(Tooltip::for_action_title(
+                                "Clear Keystrokes",
+                                &ClearKeystrokes,
+                            ))
+                            .when(!is_focused, |this| this.icon_color(Color::Muted))
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                this.clear_keystrokes(&ClearKeystrokes, window, cx);
+                            })),
+                    ),
             )
     }
 }
@@ -674,7 +660,7 @@ mod tests {
     use itertools::Itertools as _;
     use project::Project;
     use settings::SettingsStore;
-    use workspace::MultiWorkspace;
+    use workspace::Workspace;
 
     pub struct KeystrokeInputTestHelper {
         input: Entity<KeystrokeInput>,
@@ -1115,14 +1101,14 @@ mod tests {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
-            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            theme::init(theme::LoadThemes::JustBase, cx);
         });
 
         let fs = FakeFs::new(cx.executor());
         let project = Project::test(fs, [], cx).await;
-        let window_handle =
-            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let cx = VisualTestContext::from_window(window_handle.into(), cx);
+        let workspace =
+            cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let cx = VisualTestContext::from_window(*workspace, cx);
         KeystrokeInputTestHelper::new(cx)
     }
 

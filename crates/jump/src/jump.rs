@@ -6,7 +6,6 @@ use gpui::{
     Styled, Window, div,
 };
 use jump_settings::JumpSettings;
-use multi_buffer::MultiBufferOffset;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::Settings;
@@ -248,7 +247,7 @@ impl JumpBar {
                             pane.activate_item(item_index, true, true, window, cx);
                         });
                     }
-                    window.focus(&pane.focus_handle(cx), cx);
+                    window.focus(&pane.focus_handle(cx));
                     break;
                 }
             }
@@ -328,11 +327,14 @@ impl JumpBar {
 
             let editor_matches = editor_entity.update(cx, |editor, cx| {
                 let snapshot = editor.snapshot(window, cx);
-                let scroll_position = snapshot.scroll_position();
                 let display_snapshot = snapshot.display_snapshot;
 
                 // Get the visible range
                 let visible_line_count = editor.visible_line_count().unwrap_or(50.0);
+                let scroll_position = editor
+                    .scroll_manager
+                    .anchor()
+                    .scroll_position(&display_snapshot);
 
                 let visible_start_row = scroll_position.y as u32;
                 let visible_end_row = visible_start_row + visible_line_count.ceil() as u32;
@@ -357,6 +359,7 @@ impl JumpBar {
 
                 let mut matches = Vec::new();
 
+                let text = buffer_snapshot.text();
                 let query_str = query.as_str();
 
                 if query_len == 0 {
@@ -367,24 +370,29 @@ impl JumpBar {
                 let query_first_lower = query_first.to_ascii_lowercase();
                 let query_first_upper = query_first.to_ascii_uppercase();
 
-                let search_end = end_offset.0.saturating_sub(query_len);
-                let mut byte_offset = start_offset.0;
+                let bytes = text.as_bytes();
 
-                // Only search within the visible range.
-                for character in buffer_snapshot.chars_at(start_offset) {
-                    if byte_offset > search_end {
+                // Only search within the visible range
+                for offset in start_offset..end_offset {
+                    // Skip if remaining text is shorter than query
+                    if offset + query_len > end_offset {
                         break;
                     }
 
                     // Check first character quickly to skip most positions
-                    let c = character;
+                    let c = bytes[offset] as char;
                     if c != query_first_lower && c != query_first_upper {
-                        byte_offset += c.len_utf8();
                         continue;
                     }
 
-                    let offset = MultiBufferOffset(byte_offset);
-                    if buffer_snapshot.contains_str_at(offset, query_str) {
+                    // Extract slice safely and compare case-insensitively
+                    if !text.is_char_boundary(offset) || !text.is_char_boundary(offset + query_len)
+                    {
+                        continue;
+                    }
+
+                    let slice = &text[offset..offset + query_len];
+                    if slice.eq_ignore_ascii_case(query_str) {
                         let point = buffer_snapshot.offset_to_point(offset);
                         let display_point = display_snapshot
                             .buffer_snapshot()
@@ -400,17 +408,19 @@ impl JumpBar {
                         let distance = dy * 1000 + dx;
 
                         // Get the next character after the match
-                        let next_char = if byte_offset + query_len < buffer_snapshot.len().0 {
-                            let next_offset = MultiBufferOffset(byte_offset + query_len);
-                            buffer_snapshot.chars_at(next_offset).next()
+                        let next_char = if offset + query_len < buffer_snapshot.len() {
+                            let next_offset = offset + query_len;
+                            if text.is_char_boundary(next_offset) {
+                                text[next_offset..].chars().next()
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         };
 
                         matches.push((display_point, distance, next_char));
                     }
-
-                    byte_offset += c.len_utf8();
                 }
 
                 matches

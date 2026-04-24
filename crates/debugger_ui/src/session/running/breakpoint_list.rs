@@ -6,7 +6,7 @@ use std::{
 };
 
 use dap::{Capabilities, ExceptionBreakpointsFilter, adapters::DebugAdapterName};
-use db::kvp::KeyValueStore;
+use db::kvp::KEY_VALUE_STORE;
 use editor::Editor;
 use gpui::{
     Action, AppContext, ClickEvent, Entity, FocusHandle, Focusable, MouseButton, ScrollStrategy,
@@ -151,7 +151,7 @@ impl BreakpointList {
             .update(cx, |this, cx| this.find_or_create_worktree(path, false, cx));
         cx.spawn_in(window, async move |this, cx| {
             let (worktree, relative_path) = task.await?;
-            let worktree_id = worktree.read_with(cx, |this, _| this.id());
+            let worktree_id = worktree.read_with(cx, |this, _| this.id())?;
             let item = this
                 .update_in(cx, |this, window, cx| {
                     this.workspace.update(cx, |this, cx| {
@@ -310,7 +310,7 @@ impl BreakpointList {
 
     fn dismiss(&mut self, _: &menu::Cancel, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.focus_handle(cx).contains_focused(window, cx) {
-            self.focus_handle.focus(window, cx);
+            self.focus_handle.focus(window);
         } else if self.strip_mode.is_some() {
             self.strip_mode.take();
             cx.notify();
@@ -364,9 +364,9 @@ impl BreakpointList {
                         }
                     }
                 }
-                self.focus_handle.focus(window, cx);
+                self.focus_handle.focus(window);
             } else {
-                handle.focus(window, cx);
+                handle.focus(window);
             }
 
             return;
@@ -520,9 +520,8 @@ impl BreakpointList {
             });
             let value = serde_json::to_string(&settings);
 
-            let kvp = KeyValueStore::global(cx);
             cx.background_executor()
-                .spawn(async move { kvp.write_kvp(key, value?).await })
+                .spawn(async move { KEY_VALUE_STORE.write_kvp(key, value?).await })
         } else {
             Task::ready(Result::Ok(()))
         }
@@ -533,7 +532,7 @@ impl BreakpointList {
         adapter_name: DebugAdapterName,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
-        let Some(val) = KeyValueStore::global(cx).read_kvp(&Self::kvp_key(&adapter_name))? else {
+        let Some(val) = KEY_VALUE_STORE.read_kvp(&Self::kvp_key(&adapter_name))? else {
             return Ok(());
         };
         let value: PersistedAdapterOptions = serde_json::from_str(&val)?;
@@ -576,7 +575,7 @@ impl BreakpointList {
         )
         .with_horizontal_sizing_behavior(gpui::ListHorizontalSizingBehavior::Unconstrained)
         .with_width_from_item(self.max_width_index)
-        .track_scroll(&self.scroll_handle)
+        .track_scroll(self.scroll_handle.clone())
         .flex_1()
     }
 
@@ -628,7 +627,7 @@ impl BreakpointList {
                 .on_click({
                     let focus_handle = focus_handle.clone();
                     move |_, window, cx| {
-                        focus_handle.focus(window, cx);
+                        focus_handle.focus(window);
                         window.dispatch_action(ToggleEnableBreakpoint.boxed_clone(), cx)
                     }
                 }),
@@ -655,7 +654,7 @@ impl BreakpointList {
                     )
                     .on_click({
                         move |_, window, cx| {
-                            focus_handle.focus(window, cx);
+                            focus_handle.focus(window);
                             window.dispatch_action(UnsetBreakpoint.boxed_clone(), cx)
                         }
                     }),
@@ -777,7 +776,7 @@ impl Render for BreakpointList {
             .child(self.render_list(cx))
             .custom_scrollbars(
                 ui::Scrollbars::new(ScrollAxes::Both)
-                    .tracked_scroll_handle(&self.scroll_handle)
+                    .tracked_scroll_handle(self.scroll_handle.clone())
                     .with_track_along(ScrollAxes::Both, cx.theme().colors().panel_background)
                     .tracked_entity(cx.entity_id()),
                 window,
@@ -1408,6 +1407,7 @@ impl RenderOnce for BreakpointOptionsStrip {
 
         h_flex()
             .gap_px()
+            .mr_3() // Space to avoid overlapping with the scrollbar
             .justify_end()
             .when(has_logs || self.is_selected, |this| {
                 this.child(

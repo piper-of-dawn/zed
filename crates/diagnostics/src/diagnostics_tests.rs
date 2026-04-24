@@ -1,7 +1,7 @@
 use super::*;
 use collections::{HashMap, HashSet};
 use editor::{
-    DisplayPoint, EditorSettings, Inlay, MultiBufferOffset,
+    DisplayPoint, EditorSettings, Inlay,
     actions::{GoToDiagnostic, GoToPreviousDiagnostic, Hover, MoveToBeginning},
     display_map::DisplayRow,
     test::{
@@ -28,7 +28,6 @@ use std::{
 };
 use unindent::Unindent as _;
 use util::{RandomCharIter, path, post_inc, rel_path::rel_path};
-use workspace::MultiWorkspace;
 
 #[ctor::ctor]
 fn init_logger() {
@@ -69,11 +68,9 @@ async fn test_diagnostics(cx: &mut TestAppContext) {
     let language_server_id = LanguageServerId(0);
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
     let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
-    let workspace = window
-        .read_with(cx, |mw, _| mw.workspace().clone())
-        .unwrap();
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
+    let workspace = window.root(cx).unwrap();
     let uri = lsp::Uri::from_file_path(path!("/test/main.rs")).unwrap();
 
     // Create some diagnostics
@@ -347,11 +344,9 @@ async fn test_diagnostics_with_folds(cx: &mut TestAppContext) {
     let server_id_2 = LanguageServerId(101);
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
     let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
-    let workspace = window
-        .read_with(cx, |mw, _| mw.workspace().clone())
-        .unwrap();
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
+    let workspace = window.root(cx).unwrap();
 
     let diagnostics = window.build_entity(cx, |window, cx| {
         ProjectDiagnosticsEditor::new(true, project.clone(), workspace.downgrade(), window, cx)
@@ -458,11 +453,9 @@ async fn test_diagnostics_multiple_servers(cx: &mut TestAppContext) {
     let server_id_2 = LanguageServerId(101);
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
     let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
-    let workspace = window
-        .read_with(cx, |mw, _| mw.workspace().clone())
-        .unwrap();
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
+    let workspace = window.root(cx).unwrap();
 
     let diagnostics = window.build_entity(cx, |window, cx| {
         ProjectDiagnosticsEditor::new(true, project.clone(), workspace.downgrade(), window, cx)
@@ -670,11 +663,9 @@ async fn test_random_diagnostics_blocks(cx: &mut TestAppContext, mut rng: StdRng
 
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
     let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
-    let workspace = window
-        .read_with(cx, |mw, _| mw.workspace().clone())
-        .unwrap();
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
+    let workspace = window.root(cx).unwrap();
 
     let mutated_diagnostics = window.build_entity(cx, |window, cx| {
         ProjectDiagnosticsEditor::new(true, project.clone(), workspace.downgrade(), window, cx)
@@ -845,11 +836,9 @@ async fn test_random_diagnostics_with_inlays(cx: &mut TestAppContext, mut rng: S
 
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
     let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
-    let workspace = window
-        .read_with(cx, |mw, _| mw.workspace().clone())
-        .unwrap();
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
+    let workspace = window.root(cx).unwrap();
 
     let mutated_diagnostics = window.build_entity(cx, |window, cx| {
         ProjectDiagnosticsEditor::new(true, project.clone(), workspace.downgrade(), window, cx)
@@ -889,8 +878,7 @@ async fn test_random_diagnostics_with_inlays(cx: &mut TestAppContext, mut rng: S
                 diagnostics.editor.update(cx, |editor, cx| {
                     let snapshot = editor.snapshot(window, cx);
                     if !snapshot.buffer_snapshot().is_empty() {
-                        let position = rng
-                            .random_range(MultiBufferOffset(0)..snapshot.buffer_snapshot().len());
+                        let position = rng.random_range(0..snapshot.buffer_snapshot().len());
                         let position = snapshot.buffer_snapshot().clip_offset(position, Bias::Left);
                         log::info!(
                             "adding inlay at {position}/{}: {:?}",
@@ -1400,11 +1388,9 @@ async fn test_diagnostics_with_code(cx: &mut TestAppContext) {
     let language_server_id = LanguageServerId(0);
     let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
     let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
-    let workspace = window
-        .read_with(cx, |mw, _| mw.workspace().clone())
-        .unwrap();
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
+    let workspace = window.root(cx).unwrap();
     let uri = lsp::Uri::from_file_path(path!("/root/main.js")).unwrap();
 
     // Create diagnostics with code fields
@@ -1631,8 +1617,8 @@ async fn test_buffer_diagnostics(cx: &mut TestAppContext) {
     .await;
 
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
     let project_path = project::ProjectPath {
         worktree_id: project.read_with(cx, |project, cx| {
             project.worktrees(cx).next().unwrap().read(cx).id()
@@ -1785,8 +1771,8 @@ async fn test_buffer_diagnostics_without_warnings(cx: &mut TestAppContext) {
     .await;
 
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
     let project_path = project::ProjectPath {
         worktree_id: project.read_with(cx, |project, cx| {
             project.worktrees(cx).next().unwrap().read(cx).id()
@@ -1914,8 +1900,8 @@ async fn test_buffer_diagnostics_multiple_servers(cx: &mut TestAppContext) {
     .await;
 
     let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
-    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(*window, cx);
     let project_path = project::ProjectPath {
         worktree_id: project.read_with(cx, |project, cx| {
             project.worktrees(cx).next().unwrap().read(cx).id()
@@ -2034,7 +2020,7 @@ fn init_test(cx: &mut TestAppContext) {
         zlog::init_test();
         let settings = SettingsStore::test(cx);
         cx.set_global(settings);
-        theme_settings::init(theme::LoadThemes::JustBase, cx);
+        theme::init(theme::LoadThemes::JustBase, cx);
         crate::init(cx);
         editor::init(cx);
     });

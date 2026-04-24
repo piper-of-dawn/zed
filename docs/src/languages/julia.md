@@ -1,8 +1,3 @@
----
-title: Julia
-description: "Configure Julia language support in Zed, including language servers, formatting, and debugging."
----
-
 # Julia
 
 Julia language support in Zed is provided by the community-maintained [Julia extension](https://github.com/JuliaEditorSupport/zed-julia).

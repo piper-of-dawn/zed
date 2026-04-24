@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use gpui::{App, AsyncApp, Entity, Global, Task, WeakEntity};
+use gpui::{App, AsyncApp, Entity, Global, WeakEntity};
 use lsp::LanguageServer;
 
 use crate::LspStore;
@@ -22,7 +22,7 @@ impl lsp::request::Request for SchemaContentRequest {
     const METHOD: &'static str = "vscode/content";
 }
 
-type SchemaRequestHandler = fn(Entity<LspStore>, String, &mut AsyncApp) -> Task<Result<String>>;
+type SchemaRequestHandler = fn(Entity<LspStore>, String, &mut AsyncApp) -> Result<String>;
 pub struct SchemaHandlingImpl(SchemaRequestHandler);
 
 impl Global for SchemaHandlingImpl {}
@@ -42,8 +42,8 @@ impl lsp::notification::Notification for SchemaContentsChanged {
     type Params = String;
 }
 
-pub fn notify_schemas_changed(lsp_store: Entity<LspStore>, uris: &[String], cx: &App) {
-    zlog::trace!(LOGGER => "Notifying schema changes for URIs: {:?}", uris);
+pub fn notify_schema_changed(lsp_store: Entity<LspStore>, uri: String, cx: &App) {
+    zlog::trace!(LOGGER => "Notifying schema changed for URI: {:?}", uri);
     let servers = lsp_store.read_with(cx, |lsp_store, _| {
         let mut servers = Vec::new();
         let Some(local) = lsp_store.as_local() else {
@@ -63,26 +63,18 @@ pub fn notify_schemas_changed(lsp_store: Entity<LspStore>, uris: &[String], cx: 
         servers
     });
     for server in servers {
-        for uri in uris {
-            zlog::trace!(LOGGER => "Notifying server {NAME} (id {ID:?}) of schema change for URI: {uri:?}",
-                NAME = server.name(),
-                ID = server.server_id()
-            );
-            if let Err(error) = server.notify::<SchemaContentsChanged>(uri.clone()) {
-                zlog::error!(
-                    LOGGER => "Failed to notify server {NAME} (id {ID:?}) of schema change for URI {uri:?}: {error:#}",
-                        NAME = server.name(),
-                        ID = server.server_id(),
-                );
-            }
-        }
+        zlog::trace!(LOGGER => "Notifying server {:?} of schema change for URI: {:?}", server.server_id(), &uri);
+        // TODO: handle errors
+        server.notify::<SchemaContentsChanged>(uri.clone()).ok();
     }
 }
 
 pub fn register_requests(lsp_store: WeakEntity<LspStore>, language_server: &LanguageServer) {
     language_server
         .on_request::<SchemaContentRequest, _, _>(move |params, cx| {
-            let handler = cx.try_read_global::<SchemaHandlingImpl, _>(|handler, _| handler.0);
+            let handler = cx.try_read_global::<SchemaHandlingImpl, _>(|handler, _| {
+                handler.0
+            });
             let mut cx = cx.clone();
             let uri = params.clone().pop();
             let lsp_store = lsp_store.clone();
@@ -90,7 +82,7 @@ pub fn register_requests(lsp_store: WeakEntity<LspStore>, language_server: &Lang
                 let lsp_store = lsp_store.upgrade().context("LSP store has been dropped")?;
                 let uri = uri.context("No URI")?;
                 let handle_schema_request = handler.context("No schema handler registered")?;
-                handle_schema_request(lsp_store, uri, &mut cx).await
+                handle_schema_request(lsp_store, uri, &mut cx)
             };
             async move {
                 zlog::trace!(LOGGER => "Handling schema request for {:?}", &params);

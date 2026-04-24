@@ -15,7 +15,7 @@ pub mod breakpoint_store;
 pub mod dap_command;
 pub mod dap_store;
 pub mod locators;
-pub mod memory;
+mod memory;
 pub mod session;
 
 #[cfg(any(feature = "test-support", test))]

@@ -1,8 +1,3 @@
----
-title: Groovy
-description: "Configure Groovy language support in Zed, including language servers, formatting, and debugging."
----
-
 # Groovy
 
 Groovy language support in Zed is provided by the community-maintained [Groovy extension](https://github.com/valentinegb/zed-groovy).

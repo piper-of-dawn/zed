@@ -1,4 +1,4 @@
 pub(crate) mod cargo;
-pub mod go;
+pub(crate) mod go;
 pub(crate) mod node;
-pub mod python;
+pub(crate) mod python;

@@ -24,7 +24,7 @@ impl<D: Domain> Migrator for D {
         connection.migrate(
             Self::NAME,
             Self::MIGRATIONS,
-            &mut Self::should_allow_migration_change,
+            Self::should_allow_migration_change,
         )
     }
 }

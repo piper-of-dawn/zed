@@ -79,13 +79,16 @@ impl NotificationStore {
                 let this = this.upgrade()?;
                 match status {
                     client::Status::Connected { .. } => {
-                        if let Some(task) = this.update(cx, |this, cx| this.handle_connect(cx)) {
+                        if let Some(task) = this
+                            .update(cx, |this, cx| this.handle_connect(cx))
+                            .log_err()?
+                        {
                             task.await.log_err()?;
                         }
                     }
-                    _ => {
-                        this.update(cx, |this, cx| this.handle_disconnect(cx));
-                    }
+                    _ => this
+                        .update(cx, |this, cx| this.handle_disconnect(cx))
+                        .log_err()?,
                 }
             }
             Some(())
@@ -158,7 +161,7 @@ impl NotificationStore {
                 .context("Notification store was dropped while loading notifications")?;
 
             let response = request.await?;
-            this.update(cx, |this, _| this.loaded_all_notifications = response.done);
+            this.update(cx, |this, _| this.loaded_all_notifications = response.done)?;
             Self::add_notifications(
                 this,
                 response.notifications,
@@ -209,8 +212,8 @@ impl NotificationStore {
     ) -> Result<()> {
         this.update(&mut cx, |this, cx| {
             this.splice_notifications([(envelope.payload.notification_id, None)], false, cx);
-        });
-        Ok(())
+            Ok(())
+        })?
     }
 
     async fn add_notifications(
@@ -256,10 +259,10 @@ impl NotificationStore {
             }
         }
 
-        let user_store = this.read_with(cx, |this, _| this.user_store.clone());
+        let user_store = this.read_with(cx, |this, _| this.user_store.clone())?;
 
         user_store
-            .update(cx, |store, cx| store.get_users(user_ids, cx))
+            .update(cx, |store, cx| store.get_users(user_ids, cx))?
             .await?;
         this.update(cx, |this, cx| {
             if options.clear_old {
@@ -282,7 +285,8 @@ impl NotificationStore {
                 options.is_new,
                 cx,
             );
-        });
+        })
+        .log_err();
 
         Ok(())
     }

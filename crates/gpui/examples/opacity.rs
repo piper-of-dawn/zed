@@ -1,13 +1,10 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
 use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use gpui::{
-    App, AssetSource, Bounds, BoxShadow, ClickEvent, Context, SharedString, Task, Window,
-    WindowBounds, WindowOptions, div, hsla, img, point, prelude::*, px, rgb, size, svg,
+    App, Application, AssetSource, Bounds, BoxShadow, ClickEvent, Context, SharedString, Task,
+    Window, WindowBounds, WindowOptions, div, hsla, img, point, prelude::*, px, rgb, size, svg,
 };
-use gpui_platform::application;
 
 struct Assets {
     base: PathBuf,
@@ -158,8 +155,8 @@ impl Render for HelloWorld {
     }
 }
 
-fn run_example() {
-    application()
+fn main() {
+    Application::new()
         .with_assets(Assets {
             base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"),
         })
@@ -175,16 +172,4 @@ fn run_example() {
             .unwrap();
             cx.activate(true);
         });
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
-    run_example();
 }

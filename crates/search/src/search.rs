@@ -1,6 +1,5 @@
 use bitflags::bitflags;
 pub use buffer_search::BufferSearchBar;
-pub use editor::HighlightKey;
 use editor::SearchSettings;
 use gpui::{Action, App, ClickEvent, FocusHandle, IntoElement, actions};
 use project::search::SearchQuery;
@@ -9,7 +8,6 @@ use ui::{ButtonStyle, IconButton, IconButtonShape};
 use ui::{Tooltip, prelude::*};
 use workspace::notifications::NotificationId;
 use workspace::{Toast, Workspace};
-pub use zed_actions::search::ToggleIncludeIgnored;
 
 pub use search_status_button::SEARCH_ICON;
 
@@ -35,6 +33,8 @@ actions!(
         ToggleWholeWord,
         /// Toggles case-sensitive search.
         ToggleCaseSensitive,
+        /// Toggles searching in ignored files.
+        ToggleIncludeIgnored,
         /// Toggles regular expression mode.
         ToggleRegex,
         /// Toggles the replace interface.
@@ -85,7 +85,7 @@ pub enum SearchOption {
     Backwards,
 }
 
-pub enum SearchSource<'a, 'b> {
+pub(crate) enum SearchSource<'a, 'b> {
     Buffer,
     Project(&'a Context<'b, ProjectSearchBar>),
 }
@@ -126,7 +126,7 @@ impl SearchOption {
         }
     }
 
-    pub fn as_button(
+    pub(crate) fn as_button(
         &self,
         active: SearchOptions,
         search_source: SearchSource,
@@ -143,7 +143,7 @@ impl SearchOption {
                 let focus_handle = focus_handle.clone();
                 button.on_click(move |_: &ClickEvent, window, cx| {
                     if !focus_handle.is_focused(window) {
-                        window.focus(&focus_handle, cx);
+                        window.focus(&focus_handle);
                     }
                     window.dispatch_action(action.boxed_clone(), cx);
                 })
@@ -191,7 +191,7 @@ pub(crate) fn show_no_more_matches(window: &mut Window, cx: &mut App) {
         struct NotifType();
         let notification_id = NotificationId::unique::<NotifType>();
 
-        let Some(workspace) = Workspace::for_window(window, cx) else {
+        let Some(workspace) = window.root::<Workspace>().flatten() else {
             return;
         };
         workspace.update(cx, |workspace, cx| {

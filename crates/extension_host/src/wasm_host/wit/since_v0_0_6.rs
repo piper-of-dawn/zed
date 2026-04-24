@@ -1,25 +1,21 @@
-use super::{latest, since_v0_1_0, since_v0_6_0};
+use super::{latest, since_v0_1_0};
 use crate::wasm_host::WasmState;
 use anyhow::Result;
 use extension::WorktreeDelegate;
 use gpui::BackgroundExecutor;
-use semver::Version;
+use semantic_version::SemanticVersion;
 use std::sync::{Arc, OnceLock};
 use wasmtime::component::{Linker, Resource};
 
-pub const MIN_VERSION: Version = Version::new(0, 0, 6);
+pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 0, 6);
 
 wasmtime::component::bindgen!({
-    imports: {
-        default: async | trappable,
-    },
-    exports: {
-        default: async,
-    },
+    async: true,
+    trappable_imports: true,
     path: "../extension_api/wit/since_v0.0.6",
     with: {
          "worktree": ExtensionWorktree,
-         "zed:extension/github": since_v0_6_0::zed::extension::github,
+         "zed:extension/github": latest::zed::extension::github,
          "zed:extension/lsp": since_v0_1_0::zed::extension::lsp,
          "zed:extension/nodejs": latest::zed::extension::nodejs,
          "zed:extension/platform": latest::zed::extension::platform,
@@ -35,11 +31,7 @@ pub type ExtensionWorktree = Arc<dyn WorktreeDelegate>;
 
 pub fn linker(executor: &BackgroundExecutor) -> &'static Linker<WasmState> {
     static LINKER: OnceLock<Linker<WasmState>> = OnceLock::new();
-    LINKER.get_or_init(|| {
-        super::new_linker(executor, |linker| {
-            Extension::add_to_linker::<_, WasmState>(linker, |s| s)
-        })
-    })
+    LINKER.get_or_init(|| super::new_linker(executor, Extension::add_to_linker))
 }
 
 impl From<Command> for latest::Command {

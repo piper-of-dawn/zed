@@ -1,8 +1,3 @@
----
-title: Fish
-description: "Configure Fish language support in Zed, including language servers, formatting, and debugging."
----
-
 # Fish
 
 Fish language support in Zed is provided by the community-maintained [Fish extension](https://github.com/hasit/zed-fish).

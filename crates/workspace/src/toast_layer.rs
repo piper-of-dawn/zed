@@ -3,10 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{
-    AnyView, DismissEvent, Entity, EntityId, FocusHandle, ManagedView, MouseButton, Subscription,
-    Task,
-};
+use gpui::{AnyView, DismissEvent, Entity, EntityId, FocusHandle, ManagedView, Subscription, Task};
 use ui::{animation::DefaultAnimations, prelude::*};
 use zed_actions::toast;
 
@@ -188,7 +185,7 @@ impl ToastLayer {
             cx.background_executor().timer(duration).await;
 
             if let Some(this) = this.upgrade() {
-                this.update(cx, |this, cx| this.hide_toast(cx));
+                this.update(cx, |this, cx| this.hide_toast(cx)).ok();
             }
         });
 
@@ -247,12 +244,6 @@ impl Render for ToastLayer {
                         .on_click(|_, _, cx| {
                             cx.stop_propagation();
                         })
-                        .on_mouse_down(
-                            MouseButton::Middle,
-                            cx.listener(|this, _, _, cx| {
-                                this.hide_toast(cx);
-                            }),
-                        )
                         .child(active_toast.toast.view()),
                 )
                 .animate_in(AnimationDirection::FromBottom, true),
