@@ -1810,6 +1810,16 @@ impl EditorElement {
             let mut cursors = Vec::new();
 
             let show_local_cursors = editor.show_local_cursors(window, cx);
+            let trail_settings = {
+                let s = EditorSettings::get_global(cx);
+                (
+                    s.cursor_trail,
+                    s.cursor_trail_animation_ms as f32 / 1000.0,
+                    s.cursor_trail_short_animation_ms as f32 / 1000.0,
+                    s.cursor_trail_size,
+                )
+            };
+            let mut observed_newest_visible = false;
 
             for (player_color, selections) in selections {
                 for selection in selections {
@@ -1949,7 +1959,38 @@ impl EditorElement {
                         shape: selection.cursor_shape,
                         block_text,
                         cursor_name: None,
+                        animated_corners: None,
                     };
+                    if selection.is_newest
+                        && matches!(selection.cursor_shape, CursorShape::Block)
+                        && trail_settings.0
+                    {
+                        let (_, anim_len, short_anim, trail_size) = trail_settings;
+                        let abs_origin = point(
+                            text_hitbox.origin.x + x,
+                            text_hitbox.origin.y + y,
+                        );
+                        let destination = [
+                            abs_origin,
+                            point(abs_origin.x + block_width, abs_origin.y),
+                            point(abs_origin.x + block_width, abs_origin.y + line_height),
+                            point(abs_origin.x, abs_origin.y + line_height),
+                        ];
+                        let key = (cursor_position.row().0, cursor_position.column());
+                        let (painted, animating) = editor.cursor_animation.step(
+                            key,
+                            destination,
+                            Instant::now(),
+                            anim_len,
+                            short_anim,
+                            trail_size,
+                        );
+                        cursor.animated_corners = Some(painted);
+                        if animating {
+                            editor.schedule_cursor_animation_frame(cx);
+                        }
+                        observed_newest_visible = true;
+                    }
                     let cursor_name = selection.user_name.clone().map(|name| CursorName {
                         string: name,
                         color: self.style.background,
@@ -1958,6 +1999,10 @@ impl EditorElement {
                     cursor.layout(content_origin, cursor_name, window, cx);
                     cursors.push(cursor);
                 }
+            }
+
+            if !observed_newest_visible {
+                editor.cursor_animation.reset();
             }
 
             cursors
@@ -7411,7 +7456,8 @@ impl EditorElement {
 
         let theme = cx.theme().colors();
         let label_bg = theme.text_accent;
-        let label_fg = theme.editor_background;
+        let label_fg = theme.editor_foreground;
+
         let match_bg = theme.editor_document_highlight_read_background;
 
         for jump_label in &jump_labels {
@@ -12194,6 +12240,10 @@ pub struct CursorLayout {
     shape: CursorShape,
     block_text: Option<ShapedLine>,
     cursor_name: Option<AnyElement>,
+    /// When set, paint the cursor background as a deformed quad using these
+    /// four absolute screen-space corners (TL/TR/BR/BL) instead of a rigid
+    /// rect. Used for the Neovide-style jump animation on the newest cursor.
+    animated_corners: Option<[gpui::Point<Pixels>; 4]>,
 }
 
 #[derive(Debug)]
@@ -12220,6 +12270,7 @@ impl CursorLayout {
             shape,
             block_text,
             cursor_name: None,
+            animated_corners: None,
         }
     }
 
@@ -12292,18 +12343,28 @@ impl CursorLayout {
     pub fn paint(&mut self, origin: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
         let bounds = self.bounds(origin);
 
-        //Draw background or border quad
-        let cursor = if matches!(self.shape, CursorShape::Hollow) {
-            outline(bounds, self.color, BorderStyle::Solid)
-        } else {
-            fill(bounds, self.color)
-        };
-
         if let Some(name) = &mut self.cursor_name {
             name.paint(window, cx);
         }
 
-        window.paint_quad(cursor);
+        if let Some(corners) = self.animated_corners {
+            let mut builder = gpui::PathBuilder::fill();
+            builder.move_to(corners[0]);
+            builder.line_to(corners[1]);
+            builder.line_to(corners[2]);
+            builder.line_to(corners[3]);
+            builder.close();
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, self.color);
+            }
+        } else {
+            let cursor = if matches!(self.shape, CursorShape::Hollow) {
+                outline(bounds, self.color, BorderStyle::Solid)
+            } else {
+                fill(bounds, self.color)
+            };
+            window.paint_quad(cursor);
+        }
 
         if let Some(block_text) = &self.block_text {
             block_text

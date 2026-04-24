@@ -17,6 +17,31 @@ pub struct EditorSettingsContent {
     ///
     /// Default: true
     pub cursor_blink: Option<bool>,
+    /// Whether the cursor smoothly animates between positions on jumps,
+    /// producing a Neovide-style comet trail that stretches toward the new
+    /// destination before settling. Only the newest cursor is animated;
+    /// typing and short horizontal moves snap instantly.
+    ///
+    /// Default: false
+    pub cursor_trail: Option<bool>,
+    /// Duration, in milliseconds, of the cursor jump animation. The trailing
+    /// corner of the cursor reaches its destination after this many ms.
+    ///
+    /// Default: 150
+    pub cursor_trail_animation_ms: Option<u64>,
+    /// Duration, in milliseconds, of the cursor animation for short moves
+    /// (within two cells on the same row, e.g. typing). Lower values keep
+    /// insert-mode responsive.
+    ///
+    /// Default: 40
+    pub cursor_trail_short_animation_ms: Option<u64>,
+    /// How much the cursor stretches toward the destination during a jump.
+    /// `0.0` makes all corners travel at the same speed (no trail). `1.0`
+    /// makes the leading corners snap to the destination while the trailing
+    /// corner drags behind.
+    ///
+    /// Default: 0.8
+    pub cursor_trail_size: Option<f32>,
     /// Cursor shape for the default editor.
     /// Can be "bar", "block", "underline", or "hollow".
     ///

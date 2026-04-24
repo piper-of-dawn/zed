@@ -16,6 +16,7 @@ pub mod blink_manager;
 mod bracket_colorization;
 mod clangd_ext;
 pub mod code_context_menus;
+mod cursor_trail;
 pub mod display_map;
 mod document_colors;
 mod document_symbols;
@@ -56,7 +57,9 @@ mod signature_help;
 pub mod test;
 
 pub(crate) use actions::*;
-pub use display_map::{ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder, HighlightKey};
+pub use display_map::{
+    ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder, HighlightKey,
+};
 pub use edit_prediction_types::Direction;
 pub use editor_settings::{
     CompletionDetailAlignment, CurrentLineHighlight, DiffViewStyle, DocumentColorsRenderMode,
@@ -177,6 +180,7 @@ use rand::seq::SliceRandom;
 use regex::Regex;
 use rpc::{ErrorCode, ErrorExt, proto::PeerId};
 use scroll::{Autoscroll, OngoingScroll, ScrollAnchor, ScrollManager, SharedScrollAnchor};
+use ui::scrollbars::ScrollbarAutoHide;
 use selections_collection::{MutableSelectionsCollection, SelectionsCollection};
 use serde::{Deserialize, Serialize};
 use settings::{
@@ -208,8 +212,8 @@ use theme::{
 use theme_settings::{ThemeSettings, observe_buffer_font_size_adjustment};
 use ui::{
     Avatar, ButtonSize, ButtonStyle, ContextMenu, Disclosure, IconButton, IconButtonShape,
-    IconName, IconSize, Indicator, Key, Tooltip, h_flex, prelude::*, scrollbars::ScrollbarAutoHide,
-    utils::WithRemSize,
+    IconName, IconSize, Indicator, Key, Tooltip, h_flex, 
+    prelude::*, utils::WithRemSize,
 };
 use ui_input::ErasedEditor;
 use util::{RangeExt, ResultExt, TryFutureExt, maybe, post_inc};
@@ -1258,6 +1262,8 @@ pub struct Editor {
     next_color_inlay_id: usize,
     _subscriptions: Vec<Subscription>,
     pixel_position_of_newest_cursor: Option<gpui::Point<Pixels>>,
+    pub(crate) cursor_animation: cursor_trail::CursorAnimationState,
+    pub(crate) cursor_animation_frame: Option<Task<()>>,
     gutter_dimensions: GutterDimensions,
     style: Option<EditorStyle>,
     text_style_refinement: Option<TextStyleRefinement>,
@@ -2522,6 +2528,8 @@ impl Editor {
             inline_value_cache: InlineValueCache::new(inlay_hint_settings.show_value_hints),
             gutter_hovered: false,
             pixel_position_of_newest_cursor: None,
+            cursor_animation: cursor_trail::CursorAnimationState::default(),
+            cursor_animation_frame: None,
             last_bounds: None,
             last_position_map: None,
             expect_bounds_change: None,
@@ -24350,6 +24358,26 @@ impl Editor {
     pub fn show_local_cursors(&self, window: &mut Window, cx: &mut App) -> bool {
         (self.read_only(cx) || self.blink_manager.read(cx).visible())
             && self.focus_handle.is_focused(window)
+    }
+
+    /// Ensures exactly one pending repaint is queued while the cursor
+    /// animation is active. Each tick re-schedules the next frame for as long
+    /// as a corner spring is still moving, so rendering idles the moment the
+    /// cursor settles.
+    pub(crate) fn schedule_cursor_animation_frame(&mut self, cx: &mut Context<Self>) {
+        if self.cursor_animation_frame.is_some() {
+            return;
+        }
+        self.cursor_animation_frame = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(16))
+                .await;
+            this.update(cx, |this, cx| {
+                this.cursor_animation_frame = None;
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     pub fn set_show_cursor_when_unfocused(&mut self, is_enabled: bool, cx: &mut Context<Self>) {

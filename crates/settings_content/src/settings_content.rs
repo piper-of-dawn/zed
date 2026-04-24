@@ -205,11 +205,6 @@ pub struct SettingsContent {
     /// Settings for configuring the which-key popup behaviour.
     pub which_key: Option<WhichKeySettingsContent>,
 
-    /// Whether to disable all AI features in Zed.
-    ///
-    /// Default: false
-    pub disable_ai: Option<SaturatingBool>,
-
     /// Settings related to Vim mode in Zed.
     pub vim: Option<VimSettingsContent>,
 
