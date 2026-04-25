@@ -11,11 +11,25 @@
 
 use std::time::Instant;
 
-use gpui::{Pixels, Point, px};
+use gpui::{Hsla, PathBuilder, Pixels, Point, Window, px};
 
 #[inline]
 fn pf(p: Pixels) -> f32 {
     p.into()
+}
+
+/// Paints the deformable cursor as a filled quadrilateral defined by 4 corners
+/// (TL, TR, BR, BL).
+pub fn paint_animated_quad(corners: [Point<Pixels>; 4], color: Hsla, window: &mut Window) {
+    let mut builder = PathBuilder::fill();
+    builder.move_to(corners[0]);
+    builder.line_to(corners[1]);
+    builder.line_to(corners[2]);
+    builder.line_to(corners[3]);
+    builder.line_to(corners[0]);
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
 }
 
 /// Critically-damped spring. `position` is the offset from the target; the

@@ -1184,6 +1184,8 @@ pub struct Editor {
     mouse_cursor_hidden: bool,
     minimap: Option<Entity<Self>>,
     pub jump_labels: Vec<JumpLabel>,
+    pub cursor_animation: cursor_trail::CursorAnimationState,
+    pub cursor_animation_frame: Option<Task<()>>,
     hide_mouse_mode: HideMouseMode,
     pub change_list: ChangeList,
     inline_value_cache: InlineValueCache,
@@ -2337,6 +2339,8 @@ impl Editor {
             mouse_cursor_hidden: false,
             minimap: None,
             jump_labels: Vec::new(),
+            cursor_animation: cursor_trail::CursorAnimationState::default(),
+            cursor_animation_frame: None,
             hide_mouse_mode: EditorSettings::get_global(cx)
                 .hide_mouse
                 .unwrap_or_default(),

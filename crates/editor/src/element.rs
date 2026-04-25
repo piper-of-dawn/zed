@@ -1759,6 +1759,7 @@ impl EditorElement {
                         shape: selection.cursor_shape,
                         block_text,
                         cursor_name: None,
+                        animated_corners: None,
                     };
                     let cursor_name = selection.user_name.clone().map(|name| CursorName {
                         string: name,
@@ -10985,6 +10986,7 @@ pub struct CursorLayout {
     shape: CursorShape,
     block_text: Option<ShapedLine>,
     cursor_name: Option<AnyElement>,
+    pub(crate) animated_corners: Option<[gpui::Point<Pixels>; 4]>,
 }
 
 #[derive(Debug)]
@@ -11011,6 +11013,7 @@ impl CursorLayout {
             shape,
             block_text,
             cursor_name: None,
+            animated_corners: None,
         }
     }
 
@@ -11081,6 +11084,19 @@ impl CursorLayout {
     }
 
     pub fn paint(&mut self, origin: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
+        if let Some(corners) = self.animated_corners {
+            if let Some(name) = &mut self.cursor_name {
+                name.paint(window, cx);
+            }
+            crate::cursor_trail::paint_animated_quad(corners, self.color, window);
+            if let Some(block_text) = &self.block_text {
+                block_text
+                    .paint(self.origin + origin, self.line_height, window, cx)
+                    .log_err();
+            }
+            return;
+        }
+
         let bounds = self.bounds(origin);
 
         //Draw background or border quad
