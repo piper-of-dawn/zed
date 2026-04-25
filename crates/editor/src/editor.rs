@@ -14,6 +14,8 @@
 pub mod actions;
 mod blink_manager;
 mod clangd_ext;
+mod cursor_trail;
+mod jump;
 pub mod code_context_menus;
 pub mod display_map;
 mod editor_settings;
@@ -50,12 +52,7 @@ pub mod test;
 pub(crate) use actions::*;
 pub use display_map::{ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct JumpLabel {
-    pub position: DisplayPoint,
-    pub label: String,
-    pub match_length: usize,
-}
+pub use jump::{JUMP_TOGGLE_OVERLAY_OPACITY, JumpLabel};
 pub use edit_prediction::Direction;
 pub use editor_settings::{
     CurrentLineHighlight, DocumentColorsRenderMode, EditorSettings, HideMouseMode,
@@ -242,8 +239,6 @@ pub const FETCH_COLORS_DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(150);
 pub(crate) const EDIT_PREDICTION_KEY_CONTEXT: &str = "edit_prediction";
 pub(crate) const EDIT_PREDICTION_CONFLICT_KEY_CONTEXT: &str = "edit_prediction_conflict";
 pub(crate) const MINIMAP_FONT_SIZE: AbsoluteLength = AbsoluteLength::Pixels(px(2.));
-pub(crate) const JUMP_TOGGLE_OVERLAY_OPACITY: f32 = 0.4;
-
 pub type RenderDiffHunkControlsFn = Arc<
     dyn Fn(
         u32,

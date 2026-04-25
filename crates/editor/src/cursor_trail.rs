@@ -13,6 +13,11 @@ use std::time::Instant;
 
 use gpui::{Pixels, Point, px};
 
+#[inline]
+fn pf(p: Pixels) -> f32 {
+    p.into()
+}
+
 /// Critically-damped spring. `position` is the offset from the target; the
 /// spring decays it toward zero over `animation_length` seconds.
 #[derive(Clone, Copy, Debug, Default)]
@@ -102,9 +107,9 @@ impl CursorAnimationState {
                 // while the destination moves to the new location.
                 for i in 0..4 {
                     self.corners[i].spring_x.position +=
-                        (destination[i].x - prev[i].x).as_f32();
+                        pf(destination[i].x - prev[i].x);
                     self.corners[i].spring_y.position +=
-                        (destination[i].y - prev[i].y).as_f32();
+                        pf(destination[i].y - prev[i].y);
                 }
                 self.set_jump_animation_lengths(
                     destination,
@@ -158,10 +163,10 @@ impl CursorAnimationState {
         short_animation_length: f32,
         trail_size: f32,
     ) {
-        let center_x = (destination[0].x.as_f32() + destination[2].x.as_f32()) * 0.5;
-        let center_y = (destination[0].y.as_f32() + destination[2].y.as_f32()) * 0.5;
-        let width = (destination[1].x - destination[0].x).as_f32().abs().max(1.0);
-        let height = (destination[2].y - destination[1].y).as_f32().abs().max(1.0);
+        let center_x = (pf(destination[0].x) + pf(destination[2].x)) * 0.5;
+        let center_y = (pf(destination[0].y) + pf(destination[2].y)) * 0.5;
+        let width = pf(destination[1].x - destination[0].x).abs().max(1.0);
+        let height = pf(destination[2].y - destination[1].y).abs().max(1.0);
 
         // Current on-screen position of each corner.
         let visual: [Point<Pixels>; 4] = std::array::from_fn(|i| {
@@ -172,11 +177,11 @@ impl CursorAnimationState {
         });
 
         // Travel direction: average displacement across corners.
-        let mut travel_x = 0.0;
-        let mut travel_y = 0.0;
+        let mut travel_x: f32 = 0.0;
+        let mut travel_y: f32 = 0.0;
         for i in 0..4 {
-            travel_x += (destination[i].x - visual[i].x).as_f32();
-            travel_y += (destination[i].y - visual[i].y).as_f32();
+            travel_x += pf(destination[i].x - visual[i].x);
+            travel_y += pf(destination[i].y - visual[i].y);
         }
         let travel_len = (travel_x * travel_x + travel_y * travel_y).sqrt();
         let short_jump = travel_len < width * 2.001 && travel_y.abs() < height * 0.5;
@@ -193,8 +198,8 @@ impl CursorAnimationState {
         let travel_nx = if travel_len > 0.0 { travel_x / travel_len } else { 0.0 };
         let travel_ny = if travel_len > 0.0 { travel_y / travel_len } else { 0.0 };
         let mut alignments: [(usize, f32); 4] = std::array::from_fn(|i| {
-            let cdx = destination[i].x.as_f32() - center_x;
-            let cdy = destination[i].y.as_f32() - center_y;
+            let cdx = pf(destination[i].x) - center_x;
+            let cdy = pf(destination[i].y) - center_y;
             let cd_len = (cdx * cdx + cdy * cdy).sqrt().max(1.0);
             let cnx = cdx / cd_len;
             let cny = cdy / cd_len;
@@ -268,8 +273,8 @@ mod tests {
         );
         assert!(animating);
         // The painted corners should be between old and new destination, not at new.
-        assert!(painted[0].x.as_f32() < 400.0);
-        assert!(painted[0].y.as_f32() < 400.0);
+        assert!(pf(painted[0].x) < 400.0);
+        assert!(pf(painted[0].y) < 400.0);
     }
 
     #[test]
