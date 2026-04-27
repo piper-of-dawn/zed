@@ -194,6 +194,7 @@ impl VsCodeSettings {
             helix_mode: None,
             image_viewer: None,
             journal: None,
+            jump: None,
             language_models: None,
             line_indicator_format: None,
             log: None,
@@ -244,6 +245,10 @@ impl VsCodeSettings {
                 "solid" => Some(false),
                 _ => None,
             }),
+            cursor_trail: None,
+            cursor_trail_animation_ms: None,
+            cursor_trail_short_animation_ms: None,
+            cursor_trail_size: None,
             cursor_shape: self.read_enum("editor.cursorStyle", |s| match s {
                 "block" => Some(CursorShape::Block),
                 "block-outline" => Some(CursorShape::Hollow),

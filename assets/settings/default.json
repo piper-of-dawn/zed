@@ -218,6 +218,17 @@
   "use_system_prompts": true,
   // Whether the cursor blinks in the editor.
   "cursor_blink": true,
+  // Whether the cursor smoothly animates between positions on jumps,
+  // producing a Neovide-style comet trail. Only the newest cursor is
+  // animated; typing and short horizontal moves snap instantly.
+  "cursor_trail": false,
+  // Duration, in milliseconds, of the cursor jump animation.
+  "cursor_trail_animation_ms": 150,
+  // Duration, in milliseconds, for short horizontal moves (e.g. typing).
+  "cursor_trail_short_animation_ms": 40,
+  // How much the cursor stretches toward the destination during a jump.
+  // 0.0 = no trail. 1.0 = leading corners snap, trailing corner drags.
+  "cursor_trail_size": 0.8,
   // Cursor shape for the default editor.
   //  1. A vertical bar
   //     "bar"

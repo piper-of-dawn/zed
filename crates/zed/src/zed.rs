@@ -5166,6 +5166,7 @@ mod tests {
                 "image_viewer",
                 "inline_assistant",
                 "journal",
+                "jump",
                 "keymap_editor",
                 "keystroke_input",
                 "language_selector",

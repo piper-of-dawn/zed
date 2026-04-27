@@ -9328,6 +9328,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "jump"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "editor",
+ "gpui",
+ "language",
+ "project",
+ "schemars 1.0.4",
+ "serde",
+ "settings",
+ "theme",
+ "ui",
+ "util",
+ "workspace",
+ "zed_actions",
+]
+
+[[package]]
 name = "jupyter-protocol"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22458,6 +22478,7 @@ dependencies = [
  "itertools 0.14.0",
  "journal",
  "json_schema_store",
+ "jump",
  "keymap_editor",
  "language",
  "language_extension",

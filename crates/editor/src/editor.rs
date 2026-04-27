@@ -27,10 +27,12 @@ mod git;
 mod highlight_matching_bracket;
 mod hover_links;
 pub mod hover_popover;
+mod cursor_trail;
 mod indent_guides;
 mod inlays;
 pub mod items;
 mod jsx_tag_auto_close;
+mod jump;
 mod linked_editing_ranges;
 mod lsp_ext;
 mod mouse_context_menu;
@@ -63,6 +65,7 @@ pub use display_map::{
     NavigationOverlayKey, SemanticTokenHighlight,
 };
 pub use edit_prediction_types::Direction;
+pub use jump::{JUMP_TOGGLE_OVERLAY_OPACITY, JumpLabel};
 pub use editor_settings::{
     CompletionDetailAlignment, CurrentLineHighlight, DiffViewStyle, DocumentColorsRenderMode,
     EditorSettings, EditorSettingsScrollbarProxy, HideMouseMode, ScrollBeyondLastLine,
@@ -1277,6 +1280,9 @@ pub struct Editor {
     next_color_inlay_id: usize,
     _subscriptions: Vec<Subscription>,
     pixel_position_of_newest_cursor: Option<gpui::Point<Pixels>>,
+    pub jump_labels: Vec<JumpLabel>,
+    pub(crate) cursor_animation: cursor_trail::CursorAnimationState,
+    pub(crate) cursor_animation_frame: Option<Task<()>>,
     gutter_dimensions: GutterDimensions,
     style: Option<EditorStyle>,
     text_style_refinement: Option<TextStyleRefinement>,
@@ -2017,6 +2023,7 @@ impl Editor {
             .clone_state(&self.scroll_manager, &my_snapshot, &clone_snapshot, cx);
         clone.searchable = self.searchable;
         clone.read_only = self.read_only;
+        clone.jump_labels = self.jump_labels.clone();
         clone.buffers_with_disabled_indent_guides =
             self.buffers_with_disabled_indent_guides.clone();
         clone.enable_mouse_wheel_zoom = self.enable_mouse_wheel_zoom;
@@ -2024,6 +2031,11 @@ impl Editor {
         clone.needs_initial_data_update = self.enable_lsp_data;
         clone.enable_runnables = self.enable_runnables;
         clone
+    }
+
+    pub fn set_jump_labels(&mut self, labels: Vec<JumpLabel>, cx: &mut Context<Self>) {
+        self.jump_labels = labels;
+        cx.notify();
     }
 
     pub fn new(
@@ -2553,6 +2565,9 @@ impl Editor {
             inline_value_cache: InlineValueCache::new(inlay_hint_settings.show_value_hints),
             gutter_hovered: false,
             pixel_position_of_newest_cursor: None,
+            jump_labels: Vec::new(),
+            cursor_animation: cursor_trail::CursorAnimationState::default(),
+            cursor_animation_frame: None,
             last_bounds: None,
             last_position_map: None,
             expect_bounds_change: None,

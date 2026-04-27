@@ -1801,6 +1801,8 @@ impl EditorElement {
             let mut cursors = Vec::new();
 
             let show_local_cursors = editor.show_local_cursors(window, cx);
+            let trail_settings = crate::cursor_trail::CursorTrailSettings::get_global(cx).clone();
+            let mut observed_newest_visible = false;
 
             for (player_color, selections) in selections {
                 for selection in selections {
@@ -1940,7 +1942,27 @@ impl EditorElement {
                         shape: selection.cursor_shape,
                         block_text,
                         cursor_name: None,
+                        animated_corners: None,
                     };
+                    if selection.is_newest && trail_settings.enabled {
+                        let abs_origin =
+                            point(content_origin.x + x, content_origin.y + y);
+                        cursor.animated_corners = crate::cursor_trail::step_for_cursor(
+                            editor,
+                            true,
+                            selection.cursor_shape,
+                            &trail_settings,
+                            cursor_position.row().0,
+                            cursor_position.column(),
+                            abs_origin,
+                            block_width,
+                            line_height,
+                            cx,
+                        );
+                        if cursor.animated_corners.is_some() {
+                            observed_newest_visible = true;
+                        }
+                    }
                     let cursor_name = selection.user_name.clone().map(|name| CursorName {
                         string: name,
                         color: self.style.background,
@@ -1950,6 +1972,14 @@ impl EditorElement {
                     cursors.push(cursor);
                 }
             }
+
+            // Note: we intentionally do NOT reset cursor_animation when the
+            // newest cursor isn't drawn this frame (e.g. while the jump
+            // overlay holds focus). Doing so would clobber `last_destination`
+            // and force a snap instead of an animation when the cursor
+            // re-appears at its post-jump location. The state naturally
+            // becomes correct on the next frame the cursor is observed.
+            let _ = observed_newest_visible;
 
             cursors
         });
@@ -7480,6 +7510,24 @@ impl EditorElement {
         }
     }
 
+    fn paint_jump_labels(
+        &mut self,
+        layout: &mut EditorLayout,
+        content_origin: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        crate::jump::paint_jump_labels(
+            &self.editor,
+            &self.style,
+            &layout.position_map,
+            &layout.visible_display_row_range,
+            content_origin,
+            window,
+            cx,
+        );
+    }
+
     fn paint_diff_hunk_controls(
         &mut self,
         layout: &mut EditorLayout,
@@ -11365,6 +11413,7 @@ impl Element for EditorElement {
                         }
 
                         self.paint_text(layout, window, cx);
+                        self.paint_jump_labels(layout, layout.content_origin, window, cx);
 
                         if !layout.spacer_blocks.is_empty() {
                             window.with_element_namespace("blocks", |window| {
@@ -12353,6 +12402,7 @@ pub struct CursorLayout {
     shape: CursorShape,
     block_text: Option<ShapedLine>,
     cursor_name: Option<AnyElement>,
+    pub(crate) animated_corners: Option<[gpui::Point<Pixels>; 4]>,
 }
 
 #[derive(Debug)]
@@ -12379,6 +12429,7 @@ impl CursorLayout {
             shape,
             block_text,
             cursor_name: None,
+            animated_corners: None,
         }
     }
 
@@ -12449,6 +12500,26 @@ impl CursorLayout {
     }
 
     pub fn paint(&mut self, origin: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
+        if let Some(corners) = self.animated_corners {
+            if let Some(name) = &mut self.cursor_name {
+                name.paint(window, cx);
+            }
+            crate::cursor_trail::paint_animated_quad(corners, self.color, window);
+            if let Some(block_text) = &self.block_text {
+                block_text
+                    .paint(
+                        self.origin + origin,
+                        self.line_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .log_err();
+            }
+            return;
+        }
+
         let bounds = window.pixel_snap_bounds(self.bounds(origin));
 
         //Draw background or border quad

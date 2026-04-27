@@ -208,6 +208,9 @@ pub struct SettingsContent {
     // Settings related to calls in Zed
     pub calls: Option<CallSettingsContent>,
 
+    /// Settings related to jump navigation
+    pub jump: Option<JumpSettingsContent>,
+
     /// Settings for the which-key popup.
     pub which_key: Option<WhichKeySettingsContent>,
 
@@ -585,6 +588,16 @@ pub enum DockPosition {
     Left,
     Bottom,
     Right,
+}
+
+/// Configuration of jump navigation in Zed.
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct JumpSettingsContent {
+    /// Whether to automatically jump when only one match is found.
+    ///
+    /// Default: false
+    pub autojump: Option<bool>,
 }
 
 /// Configuration of voice calls in Zed.
