@@ -54,7 +54,15 @@ pub fn paint_jump_labels(
 
     let primary_fg: Hsla = theme.text;
     let label_bg: Hsla = theme.text_accent;
-    let label_fg: Hsla = theme.editor_background;
+    // editor_background can be fully transparent on translucent / blurred
+    // themes, which would render the label glyph invisible against the badge.
+    // Pick black or white based on the accent's lightness for guaranteed
+    // contrast.
+    let label_fg: Hsla = if label_bg.l > 0.55 {
+        gpui::black()
+    } else {
+        gpui::white()
+    };
 
     for jump_label in &jump_labels {
         let row = jump_label.position.row();
@@ -64,18 +72,16 @@ pub fn paint_jump_labels(
             continue;
         }
 
-        let line_layout = &position_map.line_layouts
-            [(row.0 - visible_display_row_range.start.0) as usize];
+        let line_layout =
+            &position_map.line_layouts[(row.0 - visible_display_row_range.start.0) as usize];
 
         let match_start_x = line_layout.x_for_index(column as usize);
         let match_end_x = line_layout.x_for_index(column as usize + jump_label.match_length);
-        let y: Pixels = ((row.as_f64() - scroll_position.y)
-            * ScrollPixelOffset::from(line_height))
-        .into();
+        let y: Pixels =
+            ((row.as_f64() - scroll_position.y) * ScrollPixelOffset::from(line_height)).into();
         let match_start_screen_x =
             Pixels::from(ScrollPixelOffset::from(match_start_x) - scroll_pixel_position.x);
-        let match_screen_width =
-            Pixels::from(ScrollPixelOffset::from(match_end_x - match_start_x));
+        let match_screen_width = Pixels::from(ScrollPixelOffset::from(match_end_x - match_start_x));
 
         let outline_inset = px(1.0);
         let outline_origin =
@@ -124,7 +130,8 @@ pub fn paint_jump_labels(
                 match_start_screen_x + match_screen_width - label_box_width * 0.5,
                 y - label_box_height * 0.5,
             );
-        let label_origin = label_bg_origin + point(label_padding_x, (label_box_height - line_height) * 0.5);
+        let label_origin =
+            label_bg_origin + point(label_padding_x, (label_box_height - line_height) * 0.5);
 
         window.paint_quad(PaintQuad {
             bounds: Bounds {

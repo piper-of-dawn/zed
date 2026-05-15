@@ -17,6 +17,7 @@ mod bracket_colorization;
 mod clangd_ext;
 pub mod code_context_menus;
 mod code_lens;
+mod cursor_trail;
 pub mod display_map;
 mod document_colors;
 mod document_symbols;
@@ -27,7 +28,6 @@ mod git;
 mod highlight_matching_bracket;
 mod hover_links;
 pub mod hover_popover;
-mod cursor_trail;
 mod indent_guides;
 mod inlays;
 pub mod items;
@@ -65,7 +65,6 @@ pub use display_map::{
     NavigationOverlayKey, SemanticTokenHighlight,
 };
 pub use edit_prediction_types::Direction;
-pub use jump::{JUMP_TOGGLE_OVERLAY_OPACITY, JumpLabel};
 pub use editor_settings::{
     CompletionDetailAlignment, CurrentLineHighlight, DiffViewStyle, DocumentColorsRenderMode,
     EditorSettings, EditorSettingsScrollbarProxy, HideMouseMode, ScrollBeyondLastLine,
@@ -79,6 +78,7 @@ pub use git::blame::BlameRenderer;
 pub use hover_popover::hover_markdown_style;
 pub use inlays::Inlay;
 pub use items::MAX_TAB_TITLE_LEN;
+pub use jump::{JUMP_TOGGLE_OVERLAY_OPACITY, JumpLabel};
 pub use linked_editing_ranges::LinkedEdits;
 pub use lsp::CompletionContext;
 pub use lsp_ext::lsp_tasks;

@@ -1945,8 +1945,7 @@ impl EditorElement {
                         animated_corners: None,
                     };
                     if selection.is_newest && trail_settings.enabled {
-                        let abs_origin =
-                            point(content_origin.x + x, content_origin.y + y);
+                        let abs_origin = point(content_origin.x + x, content_origin.y + y);
                         cursor.animated_corners = crate::cursor_trail::step_for_cursor(
                             editor,
                             true,

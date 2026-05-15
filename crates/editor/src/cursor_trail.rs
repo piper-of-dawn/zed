@@ -31,9 +31,7 @@ impl Settings for CursorTrailSettings {
         Self {
             enabled: editor.cursor_trail.unwrap_or(false),
             animation_length: editor.cursor_trail_animation_ms.unwrap_or(150) as f32 / 1000.0,
-            short_animation_length: editor
-                .cursor_trail_short_animation_ms
-                .unwrap_or(40) as f32
+            short_animation_length: editor.cursor_trail_short_animation_ms.unwrap_or(40) as f32
                 / 1000.0,
             trail_size: editor.cursor_trail_size.unwrap_or(0.8),
         }
@@ -70,13 +68,14 @@ pub fn step_for_cursor(
     let (top_left, size_x, size_y) = match shape {
         CursorShape::Bar => (cursor_origin_abs, bar_width, line_height),
         CursorShape::Underline => (
-            point(cursor_origin_abs.x, cursor_origin_abs.y + line_height - underline_height),
+            point(
+                cursor_origin_abs.x,
+                cursor_origin_abs.y + line_height - underline_height,
+            ),
             block_width,
             underline_height,
         ),
-        CursorShape::Block | CursorShape::Hollow => {
-            (cursor_origin_abs, block_width, line_height)
-        }
+        CursorShape::Block | CursorShape::Hollow => (cursor_origin_abs, block_width, line_height),
     };
     let destination = [
         top_left,
@@ -214,10 +213,8 @@ impl CursorAnimationState {
                 // Re-anchor springs: preserve the on-screen visual position
                 // while the destination moves to the new location.
                 for i in 0..4 {
-                    self.corners[i].spring_x.position +=
-                        pf(destination[i].x - prev[i].x);
-                    self.corners[i].spring_y.position +=
-                        pf(destination[i].y - prev[i].y);
+                    self.corners[i].spring_x.position += pf(destination[i].x - prev[i].x);
+                    self.corners[i].spring_y.position += pf(destination[i].y - prev[i].y);
                 }
                 self.set_jump_animation_lengths(
                     destination,
@@ -271,8 +268,6 @@ impl CursorAnimationState {
         short_animation_length: f32,
         trail_size: f32,
     ) {
-        let center_x = (pf(destination[0].x) + pf(destination[2].x)) * 0.5;
-        let center_y = (pf(destination[0].y) + pf(destination[2].y)) * 0.5;
         let width = pf(destination[1].x - destination[0].x).abs().max(1.0);
         let height = pf(destination[2].y - destination[1].y).abs().max(1.0);
 
@@ -302,24 +297,33 @@ impl CursorAnimationState {
             return;
         }
 
-        // Assign animation length per corner by *projection* along the travel
-        // direction. Corners that share a leading/trailing edge get the same
-        // length, so the cursor stretches uniformly (parallelogram) rather
-        // than warping into a trapezium.
-        let travel_nx = if travel_len > 0.0 { travel_x / travel_len } else { 0.0 };
-        let travel_ny = if travel_len > 0.0 { travel_y / travel_len } else { 0.0 };
+        // Pair corners by the *dominant* travel axis so only two distinct
+        // animation lengths are ever in play. This keeps the cursor a rigid
+        // rectangle during transit (no tilting/parallelogram artefact for
+        // diagonal jumps) and produces the Neovide-style edge-led stretch:
+        // the leading edge snaps fast, the trailing edge lags, the cursor
+        // visibly elongates along the travel direction and contracts back at
+        // the destination.
+        // Corner index convention: 0=TL, 1=TR, 2=BR, 3=BL.
         let leading = animation_length * (1.0 - trail_size).clamp(0.0, 1.0);
         let trailing = animation_length;
+        let leading_corners: [bool; 4] = if travel_x.abs() >= travel_y.abs() {
+            if travel_x >= 0.0 {
+                [false, true, true, false] // moving right: right edge leads
+            } else {
+                [true, false, false, true] // moving left: left edge leads
+            }
+        } else if travel_y >= 0.0 {
+            [false, false, true, true] // moving down: bottom edge leads
+        } else {
+            [true, true, false, false] // moving up: top edge leads
+        };
         for i in 0..4 {
-            let cdx = pf(destination[i].x) - center_x;
-            let cdy = pf(destination[i].y) - center_y;
-            let cd_len = (cdx * cdx + cdy * cdy).sqrt().max(1.0);
-            let cnx = cdx / cd_len;
-            let cny = cdy / cd_len;
-            // alignment in [-1, 1]: +1 = fully leading, -1 = fully trailing.
-            let alignment = cnx * travel_nx + cny * travel_ny;
-            let t = (alignment + 1.0) * 0.5;
-            self.corners[i].animation_length = trailing + (leading - trailing) * t;
+            self.corners[i].animation_length = if leading_corners[i] {
+                leading
+            } else {
+                trailing
+            };
         }
     }
 }
